@@ -27,4 +27,6 @@
 *.aab 
 push.bat 
 Init.bat 
+push.bat.meta 
+Init.bat.meta 
 init-unity-git.bat 
