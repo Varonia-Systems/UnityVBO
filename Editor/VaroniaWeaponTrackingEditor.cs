@@ -230,8 +230,9 @@ namespace VaroniaBackOffice
             GUILayout.Space(8);
 
             // ── Tracker card ──
-            var propTrackerFollower = serializedObject.FindProperty("trackerFollower");
-            var propTrackingLost    = serializedObject.FindProperty("trackingLost");
+            var propTrackerFollower   = serializedObject.FindProperty("trackerFollower");
+            var propTrackingLost      = serializedObject.FindProperty("trackingLost");
+            var propParentMode        = serializedObject.FindProperty("parentTrackingMode");
 
             bool hasTracker   = propTrackerFollower.objectReferenceValue != null;
             bool trackingLost = propTrackingLost.boolValue;
@@ -256,6 +257,16 @@ namespace VaroniaBackOffice
                     GUILayout.Label("Auto-récupéré au spawn", readOnlyStyle);
                     EditorGUILayout.EndHorizontal();
                 }
+
+                GUILayout.Space(8);
+                DrawSectionLabel("PARENT TRACKING MODE");
+                DrawDivider();
+                GUILayout.Space(6);
+
+                EditorGUILayout.BeginHorizontal();
+                GUILayout.Label("Tracking Mode", fieldLabelStyle, GUILayout.Width(140));
+                EditorGUILayout.PropertyField(propParentMode, GUIContent.none);
+                EditorGUILayout.EndHorizontal();
 
             }, hasTracker ? colAccent : colWarn);
 

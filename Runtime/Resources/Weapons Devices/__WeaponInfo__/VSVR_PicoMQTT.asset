@@ -12,9 +12,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 12a2e1e557a344b5b13cb791769af693, type: 3}
   m_Name: VSVR_PicoMQTT
   m_EditorClassIdentifier: VboBase.Runtime::_WeaponInfo
-  postionOffset: {x: -0.1337, y: 0.0025, z: 0.0531}
-  rotationOffset: {x: 87, y: -20, z: -74}
   ModelId: 70
   DisplayNameModel: Pico MQTT Varonia Gun
-  inputType: 1
+  postionOffset: {x: -0.1337, y: 0.0025, z: 0.0531}
+  rotationOffset: {x: 87, y: -20, z: -74}
   prefabWeapon: {fileID: 7472680712364335062, guid: a740d7b68a034a0479293eda1d5425e8, type: 3}
+  postionOffset_openxr: {x: 0, y: 0, z: 0}
+  rotationOffset_openxr: {x: 0, y: 0, z: 0}
+  prefabWeapon_openxr: {fileID: 0}
+  inputType: 1

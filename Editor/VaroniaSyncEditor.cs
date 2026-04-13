@@ -173,11 +173,27 @@ namespace VaroniaBackOffice
                 GUILayout.Space(6);
 
                 EditorGUILayout.BeginHorizontal();
+                GUILayout.Label("Instantiate Boundary", fieldLabelStyle, GUILayout.Width(130));
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("instantiateBoundary"), GUIContent.none);
+                EditorGUILayout.EndHorizontal();
+
+                GUILayout.Space(4);
+
+                EditorGUI.BeginDisabledGroup(!script.InstantiateBoundary);
+                EditorGUILayout.BeginHorizontal();
                 GUILayout.Label("Boundary Prefab", fieldLabelStyle, GUILayout.Width(130));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("boundaryPrefab"), GUIContent.none);
                 EditorGUILayout.EndHorizontal();
 
-            }, script.HasPrefab ? colAccent : colWarn);
+                GUILayout.Space(4);
+
+                EditorGUILayout.BeginHorizontal();
+                GUILayout.Label("Start Inactive", fieldLabelStyle, GUILayout.Width(130));
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("startBoundaryInactive"), GUIContent.none);
+                EditorGUILayout.EndHorizontal();
+                EditorGUI.EndDisabledGroup();
+
+            }, (!script.InstantiateBoundary || script.HasPrefab) ? colAccent : colWarn);
 
             GUILayout.Space(8);
             GUILayout.Label("Varonia Back Office  ·  VaroniaSync", footerStyle);

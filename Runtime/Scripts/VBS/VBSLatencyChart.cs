@@ -2,7 +2,7 @@ using System;
 using System.Collections;
 using System.Text;
 using UnityEngine;
-#if STEAMVR_ENABLED 
+#if STEAMVR_ENABLED
 using Valve.VR;
 #endif
 using VaroniaBackOffice;
@@ -12,7 +12,7 @@ public enum TrackingState { Ok = 0, Strange = 1, Lost = 2, BigLost = 3, NO = 4 }
 
 public class VBSLatencyChart : MonoBehaviour
 {
-#if STEAMVR_ENABLED 
+#if STEAMVR_ENABLED
 
     public enum DisplayCorner { TopLeft, TopRight, BottomLeft, BottomRight }
 
@@ -20,6 +20,7 @@ public class VBSLatencyChart : MonoBehaviour
     [SerializeField] private DisplayCorner corner = DisplayCorner.BottomRight;
     [SerializeField] private Vector2 size = new Vector2(340f, 130f);
     [SerializeField] private float margin = 12f;
+    public float scaleFactor = 1f;
 
     [Header("Chart Config")]
     [SerializeField] private int maxBars = 80;
@@ -35,7 +36,9 @@ public class VBSLatencyChart : MonoBehaviour
     static readonly Color ColMutedFg = new Color(0.55f, 0.55f, 0.62f, 1f);
     static readonly Color ColDivider = new Color(1f, 1f, 1f, 0.06f);
 
-    private Texture2D[] _history;
+    // Bar history as color indices instead of Texture2D references
+    // 0=empty, 1=green, 2=yellow, 3=orange, 4=purple, 5=red
+    private byte[] _history;
     private int _writeIdx;
     private CVRSystem _vrSystem;
     private string _headsetName = "—";
@@ -45,12 +48,33 @@ public class VBSLatencyChart : MonoBehaviour
     private float _totalLagTime = 0f;
     private bool _wasLagging = false;
 
-    private bool _stylesBuilt;
-    private GUIStyle _headerStyle, _statusStyle, _valStyle, _statLabelStyle, _statValStyle;
-    private Texture2D _texBg, _texDivider, _texAccent, _texGreen, _texYellow, _texOrange, _texPurple, _texRed;
+    // Pre-allocated pose array (avoids new[] every 0.1s)
+    private readonly TrackedDevicePose_t[] _poses = new TrackedDevicePose_t[1];
 
     public HelmetState helmet;
     public TrackingState tracking;
+
+    // ─── RenderTexture + GL ───────────────────────────────────────────────────
+    private RenderTexture _rt;
+    private Material _glMat;
+    private bool _rtDirty = true;
+
+    // ─── Cached strings ───────────────────────────────────────────────────────
+    private string _cachedHeader;
+    private string _cachedHelmetStatus = "—";
+    private string _cachedTrackingStatus = "—";
+    private string _cachedLagCount = "0 EVENTS";
+    private string _cachedLagTime = "0.0 SECONDS";
+
+    private int _lastLagCount = -1;
+    private float _lastLagTimeSnap = -1f;
+    private HelmetState _lastHelmet = (HelmetState)(-1);
+    private TrackingState _lastTracking = (TrackingState)(-1);
+
+    // ─── Styles ───────────────────────────────────────────────────────────────
+    private bool _stylesBuilt;
+    private float _lastScale;
+    private GUIStyle _headerStyle, _statusStyle, _valStyle, _statLabelStyle, _statValStyle;
 
     // ===== ANTI-CRASH =====
     private static bool _dead = false;
@@ -60,7 +84,6 @@ public class VBSLatencyChart : MonoBehaviour
     {
         _dead = false;
     }
-
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
     static void InstallQuitHook()
@@ -72,7 +95,7 @@ public class VBSLatencyChart : MonoBehaviour
                 KillAll();
         };
 #else
-    Application.quitting += KillAll;
+        Application.quitting += KillAll;
 #endif
     }
 
@@ -88,7 +111,7 @@ public class VBSLatencyChart : MonoBehaviour
         }
     }
 
-    private void Awake() => _history = new Texture2D[maxBars];
+    private void Awake() => _history = new byte[maxBars];
 
     private IEnumerator Start()
     {
@@ -105,6 +128,9 @@ public class VBSLatencyChart : MonoBehaviour
 
         if (_headsetName != "Vive VBStreaming Focus3") { Destroy(this); yield break; }
 
+        _cachedHeader = string.Concat("VBS MONITOR • ", _headsetName);
+
+        EnsureRT();
         _ready = true;
         StartCoroutine(DataLoop());
     }
@@ -118,7 +144,7 @@ public class VBSLatencyChart : MonoBehaviour
 
             UpdateStates();
 
-            _history[_writeIdx] = GetCurrentStateTex();
+            _history[_writeIdx] = GetCurrentStateIdx();
             _writeIdx = (_writeIdx + 1) % maxBars;
 
             bool isHelmetLagging = (helmet != HelmetState.Ok);
@@ -137,6 +163,35 @@ public class VBSLatencyChart : MonoBehaviour
                 }
             }
 
+            // Rebuild cached strings only on change
+            if (helmet != _lastHelmet)
+            {
+                _lastHelmet = helmet;
+                _cachedHelmetStatus = GetHelmetFriendlyName(helmet);
+            }
+            if (tracking != _lastTracking)
+            {
+                _lastTracking = tracking;
+                _cachedTrackingStatus = GetTrackingFriendlyName(tracking);
+            }
+            if (_lagCount != _lastLagCount)
+            {
+                _lastLagCount = _lagCount;
+                _cachedLagCount = string.Concat(_lagCount.ToString(), " EVENTS");
+            }
+            // Snap lag time to 0.1 precision for string caching
+            float snapped = Mathf.Round(_totalLagTime * 10f) / 10f;
+            if (snapped != _lastLagTimeSnap)
+            {
+                _lastLagTimeSnap = snapped;
+                // Format F1 without boxing
+                long integer = (long)snapped;
+                long frac = (long)((snapped - integer) * 10f + 0.5f) % 10;
+                _cachedLagTime = string.Concat(integer.ToString(), ".", frac.ToString(), " SECONDS");
+            }
+
+            _rtDirty = true;
+
             yield return wait;
         }
     }
@@ -149,13 +204,12 @@ public class VBSLatencyChart : MonoBehaviour
         helmet = (act == EDeviceActivityLevel.k_EDeviceActivityLevel_UserInteraction) ? HelmetState.Ok :
                  (act == EDeviceActivityLevel.k_EDeviceActivityLevel_Idle) ? HelmetState.NoGameFocusOrMicroLag : HelmetState.NoStreamOrPowerOff;
 
-        TrackedDevicePose_t[] poses = new TrackedDevicePose_t[1];
-        _vrSystem.GetDeviceToAbsoluteTrackingPose(ETrackingUniverseOrigin.TrackingUniverseRawAndUncalibrated, 0, poses);
-        tracking = !poses[0].bPoseIsValid ? TrackingState.Lost :
-                   (poses[0].eTrackingResult == ETrackingResult.Running_OK) ? TrackingState.Ok : TrackingState.Strange;
+        _vrSystem.GetDeviceToAbsoluteTrackingPose(ETrackingUniverseOrigin.TrackingUniverseRawAndUncalibrated, 0, _poses);
+        tracking = !_poses[0].bPoseIsValid ? TrackingState.Lost :
+                   (_poses[0].eTrackingResult == ETrackingResult.Running_OK) ? TrackingState.Ok : TrackingState.Strange;
     }
 
-    private string GetHelmetFriendlyName(HelmetState state)
+    private static string GetHelmetFriendlyName(HelmetState state)
     {
         switch (state)
         {
@@ -166,7 +220,7 @@ public class VBSLatencyChart : MonoBehaviour
         }
     }
 
-    private string GetTrackingFriendlyName(TrackingState state)
+    private static string GetTrackingFriendlyName(TrackingState state)
     {
         switch (state)
         {
@@ -177,97 +231,200 @@ public class VBSLatencyChart : MonoBehaviour
         }
     }
 
-    private Texture2D GetCurrentStateTex()
+    /// <summary>Returns a byte index: 0=empty, 1=green, 2=yellow, 3=orange, 4=purple, 5=red</summary>
+    private byte GetCurrentStateIdx()
     {
-        if (helmet == HelmetState.NoStreamOrPowerOff) return _texRed;
-        if (helmet == HelmetState.NoGameFocusOrMicroLag) return _texPurple;
-        if (tracking == TrackingState.Lost) return _texOrange;
-        if (tracking == TrackingState.Strange) return _texYellow;
-        return _texGreen;
+        if (helmet == HelmetState.NoStreamOrPowerOff) return 5;
+        if (helmet == HelmetState.NoGameFocusOrMicroLag) return 4;
+        if (tracking == TrackingState.Lost) return 3;
+        if (tracking == TrackingState.Strange) return 2;
+        return 1;
     }
+
+    private static Color StateIdxToColor(byte idx)
+    {
+        switch (idx)
+        {
+            case 1: return ColGood;
+            case 2: return ColWarn;
+            case 3: return ColOrange;
+            case 4: return ColPurple;
+            case 5: return ColBad;
+            default: return Color.clear;
+        }
+    }
+
+    // ─── RenderTexture setup ──────────────────────────────────────────────────
+
+    private void EnsureRT()
+    {
+        float scale = (Screen.height / 1080f) * scaleFactor;
+        int rtW = (int)(size.x * scale);
+        int rtH = (int)(size.y * scale);
+
+        if (_rt == null || _rt.width != rtW || _rt.height != rtH)
+        {
+            if (_rt) { _rt.Release(); Destroy(_rt); }
+            _rt = new RenderTexture(rtW, rtH, 0, RenderTextureFormat.ARGB32);
+            _rt.filterMode = FilterMode.Point;
+            _rt.hideFlags = HideFlags.HideAndDontSave;
+            _rt.Create();
+            _rtDirty = true;
+        }
+
+        if (_glMat == null)
+        {
+            _glMat = new Material(Shader.Find("Hidden/Internal-Colored"));
+            _glMat.hideFlags = HideFlags.HideAndDontSave;
+            _glMat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+            _glMat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            _glMat.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Off);
+            _glMat.SetInt("_ZWrite", 0);
+        }
+    }
+
+    // ─── GL rendering ─────────────────────────────────────────────────────────
+
+    private void RenderToRT()
+    {
+        if (_rt == null || _glMat == null) return;
+
+        float scale = (Screen.height / 1080f) * scaleFactor;
+        float W = _rt.width;
+        float H = _rt.height;
+
+        RenderTexture prev = RenderTexture.active;
+        RenderTexture.active = _rt;
+        GL.Clear(true, true, Color.clear);
+
+        _glMat.SetPass(0);
+        GL.PushMatrix();
+        GL.LoadPixelMatrix(0, W, H, 0);
+
+        // Background
+        GLRect(0, 0, W, H, ColBg);
+
+        // Left accent bar
+        GLRect(0, 0, 3f * scale, H, ColGood);
+
+        // Dividers
+        GLRect(8f * scale, 26f * scale, W - 16f * scale, 1f * scale, ColDivider);
+
+        float statsY = (32f + 32f) * scale;
+        GLRect(8f * scale, statsY - 4f * scale, W - 16f * scale, 1f * scale, ColDivider);
+
+        // Chart bars
+        float chartW = W - 16f * scale;
+        float bw = chartW / maxBars;
+        float chartY = H - (barHeight * scale) - 8f * scale;
+
+        GL.Begin(GL.QUADS);
+        for (int i = 0; i < maxBars; i++)
+        {
+            int idx = (_writeIdx + i) % maxBars;
+            byte state = _history[idx];
+            if (state == 0) continue;
+
+            Color col = StateIdxToColor(state);
+            float bx = 8f * scale + i * bw;
+            float w = bw - (barGap * scale);
+            if (w < 1f) w = 1f;
+
+            GL.Color(col);
+            GL.Vertex3(bx,     chartY,                    0);
+            GL.Vertex3(bx + w, chartY,                    0);
+            GL.Vertex3(bx + w, chartY + (barHeight * scale), 0);
+            GL.Vertex3(bx,     chartY + (barHeight * scale), 0);
+        }
+        GL.End();
+
+        GL.PopMatrix();
+        RenderTexture.active = prev;
+        _rtDirty = false;
+    }
+
+    private static void GLRect(float x, float y, float w, float h, Color c)
+    {
+        GL.Begin(GL.QUADS);
+        GL.Color(c);
+        GL.Vertex3(x, y, 0);
+        GL.Vertex3(x + w, y, 0);
+        GL.Vertex3(x + w, y + h, 0);
+        GL.Vertex3(x, y + h, 0);
+        GL.End();
+    }
+
+    // ─── OnGUI — single RT blit + text labels ────────────────────────────────
 
     private void OnGUI()
     {
         if (!_ready || _dead) return;
         EnsureStyles();
+        EnsureRT();
 
+        if (_rtDirty)
+            RenderToRT();
+
+        float scale = (Screen.height / 1080f) * scaleFactor;
         Rect panel = GetPanelRect();
-        GUI.DrawTexture(panel, _texBg);
-        GUI.DrawTexture(new Rect(panel.x, panel.y, 3f, panel.height), _texAccent);
 
-        GUI.Label(new Rect(panel.x + 12, panel.y + 6, 200, 20), $"VBS MONITOR • {_headsetName}", _headerStyle);
-        GUI.DrawTexture(new Rect(panel.x + 8, panel.y + 26, panel.width - 16, 1), _texDivider);
+        // Single draw call for background + bars + dividers + accent
+        GUI.DrawTexture(panel, _rt);
 
-        float statusY = panel.y + 32;
-        GUI.Label(new Rect(panel.x + 12, statusY, 150, 20), "HELMET STATUS", _statusStyle);
-        GUI.Label(new Rect(panel.x + 12, statusY + 12, 180, 20), GetHelmetFriendlyName(helmet), _valStyle);
+        // Text overlays
+        GUI.Label(new Rect(panel.x + 12 * scale, panel.y + 6 * scale, 200 * scale, 20 * scale), _cachedHeader, _headerStyle);
 
-        GUI.Label(new Rect(panel.x + 185, statusY, 150, 20), "TRACKING QUALITY", _statusStyle);
-        GUI.Label(new Rect(panel.x + 185, statusY + 12, 140, 20), GetTrackingFriendlyName(tracking), _valStyle);
+        float statusY = panel.y + 32 * scale;
+        GUI.Label(new Rect(panel.x + 12 * scale, statusY, 150 * scale, 20 * scale), "HELMET STATUS", _statusStyle);
+        GUI.Label(new Rect(panel.x + 12 * scale, statusY + 12 * scale, 180 * scale, 20 * scale), _cachedHelmetStatus, _valStyle);
 
-        float statsY = statusY + 32;
-        GUI.DrawTexture(new Rect(panel.x + 8, statsY - 4, panel.width - 16, 1), _texDivider);
+        GUI.Label(new Rect(panel.x + 185 * scale, statusY, 150 * scale, 20 * scale), "TRACKING QUALITY", _statusStyle);
+        GUI.Label(new Rect(panel.x + 185 * scale, statusY + 12 * scale, 140 * scale, 20 * scale), _cachedTrackingStatus, _valStyle);
 
-        GUI.Label(new Rect(panel.x + 12, statsY, 100, 20), "STREAM DROPS", _statLabelStyle);
-        GUI.Label(new Rect(panel.x + 12, statsY + 11, 100, 20), $"{_lagCount} EVENTS", _statValStyle);
+        float statsY2 = statusY + 32 * scale;
+        GUI.Label(new Rect(panel.x + 12 * scale, statsY2, 100 * scale, 20 * scale), "STREAM DROPS", _statLabelStyle);
+        GUI.Label(new Rect(panel.x + 12 * scale, statsY2 + 11 * scale, 100 * scale, 20 * scale), _cachedLagCount, _statValStyle);
 
-        GUI.Label(new Rect(panel.x + 120, statsY, 150, 20), "TOTAL DOWN TIME", _statLabelStyle);
-        GUI.Label(new Rect(panel.x + 120, statsY + 11, 150, 20), $"{_totalLagTime:F1} SECONDS", _statValStyle);
-
-        float chartX = panel.x + 8;
-        float chartW = panel.width - 16;
-        float barW = chartW / maxBars;
-        float chartY = panel.y + panel.height - barHeight - 8;
-
-        for (int i = 0; i < maxBars; i++)
-        {
-            int idx = (_writeIdx + i) % maxBars;
-            Texture2D tex = _history[idx];
-            if (tex == null) continue;
-            GUI.DrawTexture(new Rect(chartX + (i * barW), chartY, barW - barGap, barHeight), tex);
-        }
+        GUI.Label(new Rect(panel.x + 120 * scale, statsY2, 150 * scale, 20 * scale), "TOTAL DOWN TIME", _statLabelStyle);
+        GUI.Label(new Rect(panel.x + 120 * scale, statsY2 + 11 * scale, 150 * scale, 20 * scale), _cachedLagTime, _statValStyle);
     }
 
     private Rect GetPanelRect()
     {
-        float x = (corner == DisplayCorner.TopRight || corner == DisplayCorner.BottomRight) ? Screen.width - size.x - margin : margin;
-        float y = (corner == DisplayCorner.BottomLeft || corner == DisplayCorner.BottomRight) ? Screen.height - size.y - margin : margin;
-        return new Rect(x, y, size.x, size.y);
+        float scale = (Screen.height / 1080f) * scaleFactor;
+        float w = size.x * scale;
+        float h = size.y * scale;
+        float m = margin * scale;
+
+        float x = (corner == DisplayCorner.TopRight || corner == DisplayCorner.BottomRight) ? Screen.width - w - m : m;
+        float y = (corner == DisplayCorner.BottomLeft || corner == DisplayCorner.BottomRight) ? Screen.height - h - m : m;
+        return new Rect(x, y, w, h);
     }
 
     private void EnsureStyles()
     {
-        if (_stylesBuilt) return;
-        _texBg = MakeTex(ColBg);
-        _texDivider = MakeTex(ColDivider);
-        _texAccent = MakeTex(ColGood);
-        _texGreen = MakeTex(ColGood);
-        _texYellow = MakeTex(ColWarn);
-        _texOrange = MakeTex(ColOrange);
-        _texPurple = MakeTex(ColPurple);
-        _texRed = MakeTex(ColBad);
-
-        _headerStyle = new GUIStyle { fontSize = 9, fontStyle = FontStyle.Bold, normal = { textColor = ColMutedFg } };
-        _statusStyle = new GUIStyle { fontSize = 7, fontStyle = FontStyle.Bold, normal = { textColor = ColMutedFg } };
-        _valStyle = new GUIStyle { fontSize = 10, fontStyle = FontStyle.Bold, normal = { textColor = Color.white } };
-        _statLabelStyle = new GUIStyle { fontSize = 7, fontStyle = FontStyle.Normal, normal = { textColor = ColMutedFg } };
-        _statValStyle = new GUIStyle { fontSize = 9, fontStyle = FontStyle.Bold, normal = { textColor = ColOrange } };
-
+        float scale = (Screen.height / 1080f) * scaleFactor;
+        if (_stylesBuilt && Mathf.Approximately(_lastScale, scale)) return;
         _stylesBuilt = true;
-    }
+        _lastScale = scale;
 
-    private static Texture2D MakeTex(Color col)
-    {
-        Texture2D t = new Texture2D(1, 1);
-        t.SetPixel(0, 0, col);
-        t.Apply();
-        return t;
+        _headerStyle = new GUIStyle { fontSize = Mathf.RoundToInt(9 * scale), fontStyle = FontStyle.Bold, normal = { textColor = ColMutedFg } };
+        _statusStyle = new GUIStyle { fontSize = Mathf.RoundToInt(7 * scale), fontStyle = FontStyle.Bold, normal = { textColor = ColMutedFg } };
+        _valStyle = new GUIStyle { fontSize = Mathf.RoundToInt(10 * scale), fontStyle = FontStyle.Bold, normal = { textColor = Color.white } };
+        _statLabelStyle = new GUIStyle { fontSize = Mathf.RoundToInt(7 * scale), fontStyle = FontStyle.Normal, normal = { textColor = ColMutedFg } };
+        _statValStyle = new GUIStyle { fontSize = Mathf.RoundToInt(9 * scale), fontStyle = FontStyle.Bold, normal = { textColor = ColOrange } };
     }
 
     void OnDisable()
     {
         _vrSystem = null;
         _ready = false;
+    }
+
+    private void OnDestroy()
+    {
+        if (_rt) { _rt.Release(); Destroy(_rt); }
+        if (_glMat) Destroy(_glMat);
     }
 
     void OnApplicationQuit()

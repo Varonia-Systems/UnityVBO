@@ -49,6 +49,10 @@ namespace VaroniaBackOffice
         [Header("Log Refresh")]
         [SerializeField] private float logRefreshInterval = 1.5f;
 
+        /// <summary>Facteur d'échelle manuel (1 = 1080p).</summary>
+        [Header("UI Scale")]
+        public float scaleFactor = 1f;
+
         // ─── Colors (même palette que VaroniaFPSDisplay) ─────────────────────────
 
         static readonly Color ColBg      = new Color(0.11f, 0.11f, 0.14f, 0.92f);
@@ -114,6 +118,7 @@ namespace VaroniaBackOffice
 
         // Styles (reconstruits si fontSize change)
         private bool      _stylesBuilt;
+        private float     _lastScale = 1f;
         private int       _builtFontSize = -1;
         private GUIStyle  _headerStyle;
         private GUIStyle  _modeStyle;
@@ -441,45 +446,47 @@ namespace VaroniaBackOffice
                 return;
             }
 
-            EnsureStyles();
+            float scale = (Screen.height / 1080f) * scaleFactor;
+            EnsureStyles(scale);
 
             // Dimensions dynamiques selon fontSize
-            float lineH   = fontSize + 8f;
-            float headerH = fontSize + 16f;
-            float dotSize = Mathf.Max(6f, fontSize * 0.55f);
-            float dotX    = 4f;
-            float textX   = dotX + dotSize + 4f;
+            float sFontSize = fontSize * scale;
+            float lineH   = sFontSize + 8f * scale;
+            float headerH = sFontSize + 16f * scale;
+            float dotSize = Mathf.Max(6f * scale, sFontSize * 0.55f);
+            float dotX    = 4f * scale;
+            float textX   = dotX + dotSize + 4f * scale;
 
-            Rect panel = GetPanelRect();
+            Rect panel = GetPanelRect(scale);
 
             // ── Background ──
             GUI.DrawTexture(panel, _bgTex);
-            GUI.DrawTexture(new Rect(panel.x, panel.y, 3f, panel.height), _accentTex);
+            GUI.DrawTexture(new Rect(panel.x, panel.y, 3f * scale, panel.height), _accentTex);
 
             // ── Header ──
-            Rect headerR = new Rect(panel.x + 3f, panel.y, panel.width - 3f, headerH);
+            Rect headerR = new Rect(panel.x + 3f * scale, panel.y, panel.width - 3f * scale, headerH);
             GUI.DrawTexture(headerR, _headerTex);
 
             string modeLabel = _mode.ToString().ToUpper();
-            GUI.Label(new Rect(panel.x + 14f, panel.y + 2f, 300f, headerH), "CONSOLE  ·  " + modeLabel, _headerStyle);
+            GUI.Label(new Rect(panel.x + 14f * scale, panel.y + 2f * scale, 300f * scale, headerH), "CONSOLE  ·  " + modeLabel, _headerStyle);
 
             // Bouton auto-scroll
-            float btnW = 60f, btnH = headerH - 6f;
+            float btnW = 60f * scale, btnH = headerH - 6f * scale;
             string asBtnLabel = _autoScroll ? "↓ AUTO" : "↓ OFF";
-            if (GUI.Button(new Rect(panel.x + panel.width - btnW - 4f, panel.y + 3f, btnW, btnH), asBtnLabel, _btnStyle))
+            if (GUI.Button(new Rect(panel.x + panel.width - btnW - 4f * scale, panel.y + 3f * scale, btnW, btnH), asBtnLabel, _btnStyle))
                 _autoScroll = !_autoScroll;
 
             // ── Divider ──
             float divY = panel.y + headerH;
-            GUI.DrawTexture(new Rect(panel.x + 8f, divY, panel.width - 16f, 1f), _dividerTex);
+            GUI.DrawTexture(new Rect(panel.x + 8f * scale, divY, panel.width - 16f * scale, 1f * scale), _dividerTex);
 
             // ── Scroll view ──
-            float bodyY = divY + 2f;
-            float bodyH = panel.height - headerH - 2f;
-            Rect  bodyR = new Rect(panel.x + 4f, bodyY, panel.width - 8f, bodyH);
+            float bodyY = divY + 2f * scale;
+            float bodyH = panel.height - headerH - 2f * scale;
+            Rect  bodyR = new Rect(panel.x + 4f * scale, bodyY, panel.width - 8f * scale, bodyH);
 
             float totalH   = _filtered.Count * lineH;
-            Rect  viewRect = new Rect(0, 0, bodyR.width - 4f, Mathf.Max(totalH, bodyH));
+            Rect  viewRect = new Rect(0, 0, bodyR.width - 4f * scale, Mathf.Max(totalH, bodyH));
 
             _scroll = GUI.BeginScrollView(bodyR, _scroll, viewRect, false, false, GUIStyle.none, GUIStyle.none);
 
@@ -532,7 +539,7 @@ namespace VaroniaBackOffice
                 // Texte centré verticalement
                 _entryStyle.normal.textColor = col;
                 string timePrefix = entry.Time != default ? entry.Time.ToString("HH:mm:ss") + "  " : "";
-                GUI.Label(new Rect(textX, yLine, viewRect.width - textX - 4f, lineH), timePrefix + entry.Text, _entryStyle);
+                GUI.Label(new Rect(textX, yLine, viewRect.width - textX - 4f * scale, lineH), timePrefix + entry.Text, _entryStyle);
 
                 // Détection double-clic
                 if (ev.type == EventType.MouseDown && lineR.Contains(ev.mousePosition))
@@ -565,15 +572,17 @@ namespace VaroniaBackOffice
 
             // ── Popup détail ──
             if (_popupOpen)
-                DrawPopup(panel);
+                DrawPopup(panel, scale);
         }
 
         private void DrawErrorBadge()
         {
-            EnsureStyles();
-            const float sz = 28f;
-            float x = Screen.width - sz - margin;
-            float y = margin;
+            float scale = (Screen.height / 1080f) * scaleFactor;
+            EnsureStyles(scale);
+            float sz = 28f * scale;
+            float sMargin = margin * scale;
+            float x = Screen.width - sz - sMargin;
+            float y = sMargin;
             Rect r = new Rect(x, y, sz, sz);
 
             if (_badgeBgTex == null)
@@ -583,7 +592,7 @@ namespace VaroniaBackOffice
 
             var badgeStyle = new GUIStyle
             {
-                fontSize  = Mathf.Max(9, fontSize - 1),
+                fontSize  = Mathf.RoundToInt(Mathf.Max(9, fontSize - 1) * scale),
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleCenter,
                 normal    = { textColor = Color.white },
@@ -591,56 +600,49 @@ namespace VaroniaBackOffice
             GUI.Label(r, _errorCount > 99 ? "99+" : _errorCount.ToString(), badgeStyle);
         }
 
-        private void DrawPopup(Rect anchor)
+        private void DrawPopup(Rect anchor, float scale)
         {
             // Fenêtre centrée sur le panel principal
-            float pw = Mathf.Min(anchor.width - 40f, 600f);
-            float ph = Mathf.Min(anchor.height - 60f, 340f);
+            float pw = Mathf.Min(anchor.width - 40f * scale, 600f * scale);
+            float ph = Mathf.Min(anchor.height - 60f * scale, 340f * scale);
             float px = anchor.x + (anchor.width  - pw) * 0.5f;
             float py = anchor.y + (anchor.height - ph) * 0.5f;
             Rect  popR = new Rect(px, py, pw, ph);
 
             // Fond + bordure accent
             GUI.DrawTexture(popR, _popupBgTex);
-            GUI.DrawTexture(new Rect(popR.x, popR.y, 3f, popR.height), _accentTex);
+            GUI.DrawTexture(new Rect(popR.x, popR.y, 3f * scale, popR.height), _accentTex);
 
             // Header popup
-            float popHdrH = fontSize + 16f;
-            Rect  popHdrR = new Rect(popR.x + 3f, popR.y, popR.width - 3f, popHdrH);
+            float sFontSize = fontSize * scale;
+            float popHdrH = sFontSize + 16f * scale;
+            Rect  popHdrR = new Rect(popR.x + 3f * scale, popR.y, popR.width - 3f * scale, popHdrH);
             GUI.DrawTexture(popHdrR, _popupHeaderTex);
             string popupTimeStr = _popupTime != default ? "  " + _popupTime.ToString("HH:mm:ss") : "";
-            GUI.Label(new Rect(popR.x + 14f, popR.y + 2f, popR.width - 80f, popHdrH), "LOG" + popupTimeStr, _popupTitleStyle);
+            GUI.Label(new Rect(popR.x + 14f * scale, popR.y + 2f * scale, popR.width - 80f * scale, popHdrH), "LOG" + popupTimeStr, _popupTitleStyle);
 
             // Bouton fermer
-            float closeBtnW = Mathf.Max(70f, fontSize * 6f);
-            if (GUI.Button(new Rect(popR.x + popR.width - closeBtnW - 6f, popR.y + 3f, closeBtnW, popHdrH - 6f), "✕ CLOSE", _btnStyle))
+            float closeBtnW = Mathf.Max(70f * scale, sFontSize * 6f);
+            if (GUI.Button(new Rect(popR.x + popR.width - closeBtnW - 6f * scale, popR.y + 3f * scale, closeBtnW, popHdrH - 6f * scale), "✕ CLOSE", _btnStyle))
                 _popupOpen = false;
 
             // Divider
             float pdivY = popR.y + popHdrH;
-            GUI.DrawTexture(new Rect(popR.x + 8f, pdivY, popR.width - 16f, 1f), _dividerTex);
+            GUI.DrawTexture(new Rect(popR.x + 8f * scale, pdivY, popR.width - 16f * scale, 1f * scale), _dividerTex);
 
             // Corps scrollable avec le texte complet + stacktrace
-            float bodyY = pdivY + 6f;
-            float bodyH = popR.height - popHdrH - 8f;
-            Rect  bodyR = new Rect(popR.x + 8f, bodyY, popR.width - 16f, bodyH);
-
-            // Texte principal
-            _popupStyle.normal.textColor = _popupColor;
-            _popupStyle.fontSize         = fontSize + 2;
-
-            // Style stacktrace (plus petit, grisé)
-            _popupStackStyle.fontSize         = Mathf.Max(9, fontSize);
-            _popupStackStyle.normal.textColor = ColMuted;
+            float bodyY = pdivY + 6f * scale;
+            float bodyH = popR.height - popHdrH - 8f * scale;
+            Rect  bodyR = new Rect(popR.x + 8f * scale, bodyY, popR.width - 16f * scale, bodyH);
 
             // Contenu complet : message + séparateur + stacktrace
             bool hasStack = !string.IsNullOrWhiteSpace(_popupStack);
-            float msgH   = _popupStyle.CalcHeight(new GUIContent(_popupText), bodyR.width - 8f);
-            float sepH   = hasStack ? (fontSize + 8f) : 0f;
-            float stkH   = hasStack ? _popupStackStyle.CalcHeight(new GUIContent(_popupStack), bodyR.width - 8f) : 0f;
-            float totalContentH = msgH + sepH + stkH + 8f;
+            float msgH   = _popupStyle.CalcHeight(new GUIContent(_popupText), bodyR.width - 8f * scale);
+            float sepH   = hasStack ? (sFontSize + 8f * scale) : 0f;
+            float stkH   = hasStack ? _popupStackStyle.CalcHeight(new GUIContent(_popupStack), bodyR.width - 8f * scale) : 0f;
+            float totalContentH = msgH + sepH + stkH + 8f * scale;
 
-            Rect viewRect = new Rect(0, 0, bodyR.width - 8f, Mathf.Max(totalContentH, bodyH));
+            Rect viewRect = new Rect(0, 0, bodyR.width - 8f * scale, Mathf.Max(totalContentH, bodyH));
 
             _popupScroll = GUI.BeginScrollView(bodyR, _popupScroll, viewRect, false, false, GUIStyle.none, GUIStyle.none);
 
@@ -650,13 +652,13 @@ namespace VaroniaBackOffice
             // Stacktrace
             if (hasStack)
             {
-                float sepY = msgH + 4f;
-                GUI.DrawTexture(new Rect(0, sepY, viewRect.width, 1f), _dividerTex);
+                float sepY = msgH + 4f * scale;
+                GUI.DrawTexture(new Rect(0, sepY, viewRect.width, 1f * scale), _dividerTex);
 
                 // Label "STACKTRACE"
-                GUI.Label(new Rect(0, sepY + 2f, viewRect.width, fontSize + 4f), "STACKTRACE", _popupTitleStyle);
+                GUI.Label(new Rect(0, sepY + 2f * scale, viewRect.width, sFontSize + 4f * scale), "STACKTRACE", _popupTitleStyle);
 
-                float stkY = sepY + 2f + fontSize + 4f;
+                float stkY = sepY + 2f * scale + sFontSize + 4f * scale;
                 GUI.Label(new Rect(0, stkY, viewRect.width, stkH), _popupStack, _popupStackStyle);
             }
 
@@ -673,16 +675,17 @@ namespace VaroniaBackOffice
 
         // ─── Helpers ──────────────────────────────────────────────────────────────
 
-        private Rect GetPanelRect()
+        private Rect GetPanelRect(float scale)
         {
-            float w = size.x, h = size.y;
+            float w = size.x * scale, h = size.y * scale;
             float x, y;
+            float sMargin = margin * scale;
             switch (corner)
             {
-                case DisplayCorner.TopLeft:    x = margin;                      y = margin;                       break;
-                case DisplayCorner.TopRight:   x = Screen.width - w - margin;  y = margin;                       break;
-                case DisplayCorner.BottomLeft: x = margin;                      y = Screen.height - h - margin;   break;
-                default:                       x = Screen.width - w - margin;  y = Screen.height - h - margin;   break;
+                case DisplayCorner.TopLeft:    x = sMargin;                      y = sMargin;                       break;
+                case DisplayCorner.TopRight:   x = Screen.width - w - sMargin;  y = sMargin;                       break;
+                case DisplayCorner.BottomLeft: x = sMargin;                      y = Screen.height - h - sMargin;   break;
+                default:                       x = Screen.width - w - sMargin;  y = Screen.height - h - sMargin;   break;
             }
             return new Rect(x, y, w, h);
         }
@@ -697,15 +700,18 @@ namespace VaroniaBackOffice
 #endif
         }
 
-        private void EnsureStyles()
+        private void EnsureStyles(float scale)
         {
-            // Reconstruction si fontSize a changé en cours de jeu
-            if (_stylesBuilt && _builtFontSize == fontSize) return;
+            // Reconstruction si fontSize ou scale a changé en cours de jeu
+            if (_stylesBuilt && _builtFontSize == fontSize && Mathf.Approximately(scale, _lastScale)) return;
 
             if (_stylesBuilt) DestroyTextures();
 
             _stylesBuilt   = true;
             _builtFontSize = fontSize;
+            _lastScale     = scale;
+
+            float sFontSize = fontSize * scale;
 
             _bgTex        = MakeTex(ColBg);
             _headerTex    = MakeTex(ColHeader);
@@ -721,7 +727,7 @@ namespace VaroniaBackOffice
 
             _headerStyle = new GUIStyle
             {
-                fontSize  = fontSize,
+                fontSize  = Mathf.RoundToInt(sFontSize),
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleLeft,
                 normal    = { textColor = ColValue },
@@ -729,7 +735,7 @@ namespace VaroniaBackOffice
 
             _modeStyle = new GUIStyle
             {
-                fontSize  = Mathf.Max(9, fontSize - 1),
+                fontSize  = Mathf.RoundToInt(Mathf.Max(9, fontSize - 1) * scale),
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleRight,
                 normal    = { textColor = ColMuted },
@@ -737,41 +743,41 @@ namespace VaroniaBackOffice
 
             _entryStyle = new GUIStyle
             {
-                fontSize  = fontSize,
+                fontSize  = Mathf.RoundToInt(sFontSize),
                 fontStyle = FontStyle.Normal,
                 alignment = TextAnchor.MiddleLeft,
                 wordWrap  = false,
                 clipping  = TextClipping.Clip,
                 normal    = { textColor = ColValue },
-                padding   = new RectOffset(2, 4, 0, 0),
+                padding   = new RectOffset(Mathf.RoundToInt(2 * scale), Mathf.RoundToInt(4 * scale), 0, 0),
                 border    = new RectOffset(0, 0, 0, 0),
             };
 
             _btnStyle = new GUIStyle
             {
-                fontSize  = Mathf.Max(9, fontSize - 2),
+                fontSize  = Mathf.RoundToInt(Mathf.Max(9, fontSize - 2) * scale),
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleCenter,
                 normal    = { textColor = ColMuted, background = MakeTex(new Color(0.2f, 0.2f, 0.25f, 0.9f)) },
                 hover     = { textColor = ColValue, background = MakeTex(new Color(0.25f, 0.25f, 0.32f, 0.9f)) },
-                border    = new RectOffset(2, 2, 2, 2),
-                padding   = new RectOffset(4, 4, 2, 2),
+                border    = new RectOffset(Mathf.RoundToInt(2 * scale), Mathf.RoundToInt(2 * scale), Mathf.RoundToInt(2 * scale), Mathf.RoundToInt(2 * scale)),
+                padding   = new RectOffset(Mathf.RoundToInt(4 * scale), Mathf.RoundToInt(4 * scale), Mathf.RoundToInt(2 * scale), Mathf.RoundToInt(2 * scale)),
             };
 
             _popupStyle = new GUIStyle
             {
-                fontSize  = fontSize + 2,
+                fontSize  = Mathf.RoundToInt((fontSize + 2) * scale),
                 fontStyle = FontStyle.Normal,
                 alignment = TextAnchor.UpperLeft,
                 wordWrap  = true,
                 clipping  = TextClipping.Clip,
                 normal    = { textColor = ColValue },
-                padding   = new RectOffset(4, 4, 4, 4),
+                padding   = new RectOffset(Mathf.RoundToInt(4 * scale), Mathf.RoundToInt(4 * scale), Mathf.RoundToInt(4 * scale), Mathf.RoundToInt(4 * scale)),
             };
 
             _popupTitleStyle = new GUIStyle
             {
-                fontSize  = fontSize,
+                fontSize  = Mathf.RoundToInt(sFontSize),
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleLeft,
                 normal    = { textColor = ColValue },
@@ -779,13 +785,13 @@ namespace VaroniaBackOffice
 
             _popupStackStyle = new GUIStyle
             {
-                fontSize  = Mathf.Max(9, fontSize),
+                fontSize  = Mathf.RoundToInt(Mathf.Max(9, fontSize) * scale),
                 fontStyle = FontStyle.Normal,
                 alignment = TextAnchor.UpperLeft,
                 wordWrap  = true,
                 clipping  = TextClipping.Clip,
                 normal    = { textColor = ColMuted },
-                padding   = new RectOffset(4, 4, 2, 2),
+                padding   = new RectOffset(Mathf.RoundToInt(4 * scale), Mathf.RoundToInt(4 * scale), Mathf.RoundToInt(2 * scale), Mathf.RoundToInt(2 * scale)),
             };
         }
 

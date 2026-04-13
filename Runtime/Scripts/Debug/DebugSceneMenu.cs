@@ -17,6 +17,10 @@ public class DebugSceneMenu : MonoBehaviour
     [SerializeField] private float width = 460f;
     [SerializeField] private int scenesPerPage = 10;
 
+    /// <summary>Facteur d'échelle manuel (1 = 1080p).</summary>
+    [Header("UI Scale")]
+    public float scaleFactor = 1f;
+
     // ─── Colors ─────────────────────────────────────────────────────────────
 
     static readonly Color ColBg     = new Color(0.11f, 0.11f, 0.14f, 0.98f);
@@ -64,6 +68,7 @@ public class DebugSceneMenu : MonoBehaviour
     // ─── Styles ───────────────────────────────────────────────────────────────
 
     private bool      _stylesBuilt;
+    private float     _lastScale = 1f;
     private GUIStyle  _titleStyle;
     private GUIStyle  _sectionStyle;
     private GUIStyle  _labelStyle;
@@ -168,39 +173,42 @@ public class DebugSceneMenu : MonoBehaviour
     private void OnGUI()
     {
         if (!_menuVisible) return;
-        EnsureStyles();
+        
+        float scale = (Screen.height / 1080f) * scaleFactor;
+        EnsureStyles(scale);
 
         int   startIdx        = _currentPage * scenesPerPage;
         int   scenesInThisPage = Mathf.Min(scenesPerPage, _sceneNames.Count - startIdx);
         int   totalPages      = Mathf.Max(1, Mathf.CeilToInt((float)_sceneNames.Count / scenesPerPage));
 
         // ── Dimensions ──
-        const float rowH    = 22f;
-        const float headerH = 40f;
-        const float divH    = 1f;
-        const float secH    = 20f;
-        const float padBot  = 14f;
-        const float padTop  = 12f;
+        float rowH    = 22f * scale;
+        float headerH = 40f * scale;
+        float divH    = 1f * scale;
+        float secH    = 20f * scale;
+        float padBot  = 14f * scale;
+        float padTop  = 12f * scale;
 
-        float scenesBlockH = headerH + (scenesInThisPage * rowH) + 25f; 
-        float triggersBlockH = divH + 30f + 25f; 
+        float scenesBlockH = headerH + (scenesInThisPage * rowH) + 25f * scale; 
+        float triggersBlockH = divH + 30f * scale + 25f * scale; 
         float shortcutsH = 0f;
-        foreach (var sec in Sections) shortcutsH += divH + 6f + secH + (sec.entries.Length * rowH);
+        foreach (var sec in Sections) shortcutsH += divH + 6f * scale + secH + (sec.entries.Length * rowH);
 
         float totalH = padTop + scenesBlockH + triggersBlockH + shortcutsH + padBot;
+        float sWidth = width * scale;
 
-        Rect panel = new Rect((Screen.width - width) * 0.5f, (Screen.height - totalH) * 0.5f, width, totalH);
+        Rect panel = new Rect((Screen.width - sWidth) * 0.5f, (Screen.height - totalH) * 0.5f, sWidth, totalH);
 
         GUI.DrawTexture(panel, _bgTex);
-        GUI.DrawTexture(new Rect(panel.x, panel.y, 3f, panel.height), _accentTex);
+        GUI.DrawTexture(new Rect(panel.x, panel.y, 3f * scale, panel.height), _accentTex);
 
-        float lx = panel.x + 15f;
-        float lw = width - 30f;
+        float lx = panel.x + 15f * scale;
+        float lw = sWidth - 30f * scale;
         float y  = panel.y + padTop;
 
         // ── 1. SCENE SELECTION ──
-        GUI.Label(new Rect(lx, y, lw, 20f), "SCENE SELECTION", _titleStyle);
-        y += 25f;
+        GUI.Label(new Rect(lx, y, lw, 20f * scale), "SCENE SELECTION", _titleStyle);
+        y += 25f * scale;
 
         for (int i = 0; i < scenesInThisPage; i++)
         {
@@ -208,7 +216,7 @@ public class DebugSceneMenu : MonoBehaviour
             bool isCurrent = (sceneIdx == SceneManager.GetActiveScene().buildIndex);
             GUI.Label(new Rect(lx, y, lw, rowH), _sceneNames[sceneIdx].ToUpper(), _labelStyle);
 
-            Rect badgeRect = new Rect(panel.x + width - 65f, y + 2f, 50f, rowH - 6f);
+            Rect badgeRect = new Rect(panel.x + sWidth - 65f * scale, y + 2f * scale, 50f * scale, rowH - 6f * scale);
             if (isCurrent)
             {
                 _pillStyle.normal.background = _activePillTex;
@@ -224,30 +232,30 @@ public class DebugSceneMenu : MonoBehaviour
             y += rowH;
         }
 
-        y += 4f;
-        GUI.Label(new Rect(lx, y, lw, 15f), $"PAGE {_currentPage + 1}/{totalPages}  •  PGUP / PGDN", _footerStyle);
-        y += 20f;
+        y += 4f * scale;
+        GUI.Label(new Rect(lx, y, lw, 15f * scale), $"PAGE {_currentPage + 1}/{totalPages}  •  PGUP / PGDN", _footerStyle);
+        y += 20f * scale;
 
         // ── 2. GAME TRIGGERS (TUTORIAL) ──
-        GUI.DrawTexture(new Rect(panel.x + 8f, y, width - 16f, divH), _divTex);
-        y += 8f;
-        GUI.Label(new Rect(lx, y, lw, 20f), "GAME TRIGGERS", _sectionStyle);
-        y += 20f;
+        GUI.DrawTexture(new Rect(panel.x + 8f * scale, y, sWidth - 16f * scale, divH), _divTex);
+        y += 8f * scale;
+        GUI.Label(new Rect(lx, y, lw, 20f * scale), "GAME TRIGGERS", _sectionStyle);
+        y += 20f * scale;
 
         float halfW = lw / 2f;
-        GUI.Label(new Rect(lx,         y, halfW, 22f), "F2: START (NO TUTO)", _f2Style);
-        GUI.Label(new Rect(lx + halfW, y, halfW, 22f), "F3: START (W/ TUTO)",  _f3Style);
-        y += 30f;
+        GUI.Label(new Rect(lx,         y, halfW, 22f * scale), "F2: START (NO TUTO)", _f2Style);
+        GUI.Label(new Rect(lx + halfW, y, halfW, 22f * scale), "F3: START (W/ TUTO)",  _f3Style);
+        y += 30f * scale;
 
         // ── 3. SYSTEM ──
-        float keyW  = 90f;
-        float descX = lx + keyW + 6f;
-        float descW = lw - keyW - 6f;
+        float keyW  = 90f * scale;
+        float descX = lx + keyW + 6f * scale;
+        float descW = lw - keyW - 6f * scale;
 
         foreach (var sec in Sections)
         {
-            GUI.DrawTexture(new Rect(panel.x + 8f, y, width - 16f, divH), _divTex);
-            y += divH + 6f;
+            GUI.DrawTexture(new Rect(panel.x + 8f * scale, y, sWidth - 16f * scale, divH), _divTex);
+            y += divH + 6f * scale;
 
             _sectionStyle.normal.textColor = sec.titleColor;
             GUI.Label(new Rect(lx, y, lw, secH), sec.title, _sectionStyle);
@@ -285,25 +293,26 @@ public class DebugSceneMenu : MonoBehaviour
 #endif
     }
 
-    private void EnsureStyles()
+    private void EnsureStyles(float scale)
     {
-        if (_stylesBuilt) return;
+        if (_stylesBuilt && Mathf.Approximately(scale, _lastScale)) return;
         _stylesBuilt = true;
+        _lastScale   = scale;
 
-        _bgTex         = MakeTex(ColBg);
-        _accentTex     = MakeTex(ColAccent);
-        _activePillTex = MakeTex(new Color(ColGood.r, ColGood.g, ColGood.b, 0.15f));
-        _divTex        = MakeTex(ColDiv);
+        if (_bgTex == null)         _bgTex         = MakeTex(ColBg);
+        if (_accentTex == null)     _accentTex     = MakeTex(ColAccent);
+        if (_activePillTex == null) _activePillTex = MakeTex(new Color(ColGood.r, ColGood.g, ColGood.b, 0.15f));
+        if (_divTex == null)        _divTex        = MakeTex(ColDiv);
 
-        _titleStyle   = new GUIStyle { fontSize = 11, fontStyle = FontStyle.Bold, normal = { textColor = ColAccent } };
-        _sectionStyle = new GUIStyle { fontSize = 9,  fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleLeft, normal = { textColor = ColAccent } };
-        _labelStyle   = new GUIStyle { fontSize = 10, fontStyle = FontStyle.Bold, normal = { textColor = ColValue } };
-        _pillStyle    = new GUIStyle { fontSize = 8,  fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
-        _keyStyle     = new GUIStyle { fontSize = 9,  fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleLeft, normal = { textColor = ColValue } };
-        _descStyle    = new GUIStyle { fontSize = 9,  fontStyle = FontStyle.Normal, alignment = TextAnchor.MiddleLeft, normal = { textColor = ColMuted } };
-        _footerStyle  = new GUIStyle(_labelStyle) { fontSize = 9, alignment = TextAnchor.MiddleCenter, normal = { textColor = ColMuted } };
-        _f2Style      = new GUIStyle(_footerStyle) { fontSize = 11, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleLeft,  normal = { textColor = ColAccent } };
-        _f3Style      = new GUIStyle(_footerStyle) { fontSize = 11, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleRight, normal = { textColor = ColBad } };
+        _titleStyle   = new GUIStyle { fontSize = Mathf.RoundToInt(11 * scale), fontStyle = FontStyle.Bold, normal = { textColor = ColAccent } };
+        _sectionStyle = new GUIStyle { fontSize = Mathf.RoundToInt(9 * scale),  fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleLeft, normal = { textColor = ColAccent } };
+        _labelStyle   = new GUIStyle { fontSize = Mathf.RoundToInt(10 * scale), fontStyle = FontStyle.Bold, normal = { textColor = ColValue } };
+        _pillStyle    = new GUIStyle { fontSize = Mathf.RoundToInt(8 * scale),  fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+        _keyStyle     = new GUIStyle { fontSize = Mathf.RoundToInt(9 * scale),  fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleLeft, normal = { textColor = ColValue } };
+        _descStyle    = new GUIStyle { fontSize = Mathf.RoundToInt(9 * scale),  fontStyle = FontStyle.Normal, alignment = TextAnchor.MiddleLeft, normal = { textColor = ColMuted } };
+        _footerStyle  = new GUIStyle(_labelStyle) { fontSize = Mathf.RoundToInt(9 * scale), alignment = TextAnchor.MiddleCenter, normal = { textColor = ColMuted } };
+        _f2Style      = new GUIStyle(_footerStyle) { fontSize = Mathf.RoundToInt(11 * scale), fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleLeft,  normal = { textColor = ColAccent } };
+        _f3Style      = new GUIStyle(_footerStyle) { fontSize = Mathf.RoundToInt(11 * scale), fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleRight, normal = { textColor = ColBad } };
     }
 
     private static Texture2D MakeTex(Color col)

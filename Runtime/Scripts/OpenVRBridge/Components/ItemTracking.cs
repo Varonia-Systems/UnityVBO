@@ -1,5 +1,6 @@
 ﻿using System;
 using UnityEngine;
+using UnityEngine.Events;
 
 #if STEAMVR_ENABLED
 using Valve.VR;
@@ -83,6 +84,10 @@ namespace VaroniaBackOffice
         public int    foundIndex = -1;
         public string foundModel = "";
         public string foundSerial = "";
+
+        [Header("Événements")]
+        public UnityEvent OnTrackingLost;
+        public UnityEvent OnTrackingRestored;
 
         // ─────────────────────────────────────────────
         //  PRIVÉ — SteamVR
@@ -201,7 +206,11 @@ namespace VaroniaBackOffice
 #if STEAMVR_ENABLED
             if (vr == null)
                 vr = SteamVRBridge.GetSystem();
-            if (vr == null) return;
+            if (vr == null)
+            {
+                SetTrackingState(false);
+                return;
+            }
             if (_dead) return;
 
             vr.GetDeviceToAbsoluteTrackingPose(
@@ -269,7 +278,7 @@ namespace VaroniaBackOffice
         {
             if (index < 0 || index >= _poses.Length || !_poses[index].bPoseIsValid || _poses[index].eTrackingResult != ETrackingResult.Running_OK)
             {
-                isTracking = false;
+                SetTrackingState(false);
                 return;
             }
 
@@ -294,12 +303,12 @@ namespace VaroniaBackOffice
             if (rawPos == _lastPosition)
             {
                 _frozenFrameCount++;
-                if (_frozenFrameCount >= 3) isTracking = false;
+                if (_frozenFrameCount >= 3) SetTrackingState(false);
             }
             else
             {
                 _frozenFrameCount = 0;
-                isTracking = true;
+                SetTrackingState(true);
             }
             _lastPosition = rawPos;
         }
@@ -317,13 +326,13 @@ namespace VaroniaBackOffice
 
             if (_openXRDevice == null || !_openXRDevice.added)
             {
-                isTracking = false;
+                SetTrackingState(false);
                 return;
             }
 
             ApplyPoseOpenXR();
 #else
-            isTracking = false;
+            SetTrackingState(false);
 #endif
         }
 
@@ -420,7 +429,7 @@ namespace VaroniaBackOffice
                 openXRDeviceType == OpenXRDeviceType.RightController)
             {
                 var ctrl = _openXRDevice as XRController;
-                if (ctrl == null) { isTracking = false; return; }
+                if (ctrl == null) { SetTrackingState(false); return; }
 
                 pos     = ctrl.devicePosition.ReadValue();
                 rot     = ctrl.deviceRotation.ReadValue();
@@ -429,7 +438,7 @@ namespace VaroniaBackOffice
             else
             {
                 var tracker = _openXRDevice as ViveTrackerProfile.ViveTracker;
-                if (tracker == null) { isTracking = false; return; }
+                if (tracker == null) { SetTrackingState(false); return; }
 
                 pos     = tracker.devicePosition.ReadValue();
                 rot     = tracker.deviceRotation.ReadValue();
@@ -438,7 +447,7 @@ namespace VaroniaBackOffice
 
             if (!tracked)
             {
-                isTracking = false;
+                SetTrackingState(false);
                 return;
             }
 
@@ -451,12 +460,12 @@ namespace VaroniaBackOffice
             if (pos == _lastPosition)
             {
                 _frozenFrameCount++;
-                if (_frozenFrameCount >= 3) isTracking = false;
+                if (_frozenFrameCount >= 3) SetTrackingState(false);
             }
             else
             {
                 _frozenFrameCount = 0;
-                isTracking = true;
+                SetTrackingState(true);
             }
             _lastPosition = pos;
 
@@ -486,6 +495,19 @@ namespace VaroniaBackOffice
             _openXRBound  = false;
             _openXRDevice = null;
 #endif
+            SetTrackingState(false);
+        }
+
+        private void SetTrackingState(bool newState)
+        {
+            if (isTracking == newState) return;
+
+            isTracking = newState;
+
+            if (isTracking)
+                OnTrackingRestored?.Invoke();
+            else
+                OnTrackingLost?.Invoke();
         }
     }
 }

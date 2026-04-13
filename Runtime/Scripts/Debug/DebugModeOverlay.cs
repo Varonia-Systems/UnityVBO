@@ -29,6 +29,10 @@ namespace VaroniaBackOffice
         [SerializeField] private float   margin = 12f;
         [SerializeField] private Vector2 size   = new Vector2(160f, 52f);
 
+        /// <summary>Facteur d'échelle manuel (1 = 1080p).</summary>
+        [Header("UI Scale")]
+        public float scaleFactor = 1f;
+
         [Header("Toggle Key")]
         [Tooltip("Touche pour cycler entre les modes debug. Défaut : F10")]
     #if ENABLE_INPUT_SYSTEM
@@ -50,6 +54,7 @@ namespace VaroniaBackOffice
         // ─── Styles ───────────────────────────────────────────────────────────────
 
         private bool      _stylesBuilt;
+        private float     _lastScale = 1f;
         private GUIStyle  _labelStyle;
         private GUIStyle  _valueStyle;
         private GUIStyle  _keyStyle;
@@ -162,7 +167,8 @@ namespace VaroniaBackOffice
         {
             if (!IsDebugMode) return;
 
-            EnsureStyles();
+            float scale = (Screen.height / 1080f) * scaleFactor;
+            EnsureStyles(scale);
 
             Color accent = IsSuperDebugMode ? ColSuper : ColGood;
 
@@ -174,27 +180,27 @@ namespace VaroniaBackOffice
             }
 
             // ── Calcul hauteur dynamique ──
-            const float headerH   = 52f;
-            const float rowH      = 16f;
-            const float divH      = 1f;
-            const float divGap    = 6f;
-            const float bottomPad = 6f;
+            float headerH   = 52f * scale;
+            float rowH      = 16f * scale;
+            float divH      = 1f * scale;
+            float divGap    = 6f * scale;
+            float bottomPad = 6f * scale;
             var activeBindings = IsSuperDebugMode ? BindingsSuperDebug : BindingsDebug;
             float extraRows = IsSuperDebugMode ? 1f : 0f;
             float totalH = headerH + divH + divGap + (activeBindings.Length + extraRows) * rowH + bottomPad;
 
-            Rect panel = new Rect(Screen.width - size.x - margin, margin, size.x, totalH);
+            Rect panel = new Rect(Screen.width - size.x * scale - margin * scale, margin * scale, size.x * scale, totalH);
             float H = panel.height;
 
             // ── Background ──
             GUI.DrawTexture(panel, _bgTex);
 
             // ── Left accent bar (3px) ──
-            GUI.DrawTexture(new Rect(panel.x, panel.y, 3f, H), _accentTex);
+            GUI.DrawTexture(new Rect(panel.x, panel.y, 3f * scale, H), _accentTex);
 
             // ── Header : DEBUG MODE / ON ou SUPER DEBUG ──
-            float lx    = panel.x + 10f;
-            float lw    = panel.width - 14f;
+            float lx    = panel.x + 10f * scale;
+            float lw    = panel.width - 14f * scale;
             float hRowH = headerH * 0.45f;
             float pad   = headerH * 0.07f;
 
@@ -207,13 +213,13 @@ namespace VaroniaBackOffice
 
             // ── Divider ──
             float divY = panel.y + headerH;
-            GUI.DrawTexture(new Rect(panel.x + 10f, divY, panel.width - 20f, divH), _dividerTex);
+            GUI.DrawTexture(new Rect(panel.x + 10f * scale, divY, panel.width - 20f * scale, divH), _dividerTex);
 
             // ── Keybinds ──
             float ky    = divY + divGap;
-            float keyW  = 52f;
-            float descX = lx + keyW + 4f;
-            float descW = lw - keyW - 4f;
+            float keyW  = 52f * scale;
+            float descX = lx + keyW + 4f * scale;
+            float descW = lw - keyW - 4f * scale;
 
             foreach (var (key, desc) in activeBindings)
             {
@@ -235,31 +241,41 @@ namespace VaroniaBackOffice
 
         // ─── Helpers ──────────────────────────────────────────────────────────────
 
-        private void EnsureStyles()
+        private void EnsureStyles(float scale)
         {
-            if (_stylesBuilt) return;
+            if (_stylesBuilt && Mathf.Approximately(scale, _lastScale)) return;
             _stylesBuilt = true;
+            _lastScale   = scale;
 
-            _bgTex = new Texture2D(1, 1, TextureFormat.RGBA32, false);
-            _bgTex.SetPixel(0, 0, ColBg);
-            _bgTex.Apply();
-            _bgTex.hideFlags = HideFlags.HideAndDontSave;
+            if (_bgTex == null)
+            {
+                _bgTex = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+                _bgTex.SetPixel(0, 0, ColBg);
+                _bgTex.Apply();
+                _bgTex.hideFlags = HideFlags.HideAndDontSave;
+            }
 
-            _accentTex = new Texture2D(1, 1, TextureFormat.RGBA32, false);
-            _accentTex.SetPixel(0, 0, ColGood);
-            _accentTex.Apply();
-            _accentTex.hideFlags = HideFlags.HideAndDontSave;
+            if (_accentTex == null)
+            {
+                _accentTex = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+                _accentTex.SetPixel(0, 0, ColGood);
+                _accentTex.Apply();
+                _accentTex.hideFlags = HideFlags.HideAndDontSave;
+            }
 
-            _dividerTex = new Texture2D(1, 1, TextureFormat.RGBA32, false);
-            _dividerTex.SetPixel(0, 0, ColDivider);
-            _dividerTex.Apply();
-            _dividerTex.hideFlags = HideFlags.HideAndDontSave;
+            if (_dividerTex == null)
+            {
+                _dividerTex = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+                _dividerTex.SetPixel(0, 0, ColDivider);
+                _dividerTex.Apply();
+                _dividerTex.hideFlags = HideFlags.HideAndDontSave;
+            }
 
             _lastAccentColor = ColGood;
 
             _labelStyle = new GUIStyle
             {
-                fontSize  = 9,
+                fontSize  = Mathf.RoundToInt(9 * scale),
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleLeft,
                 normal    = { textColor = ColMuted },
@@ -267,7 +283,7 @@ namespace VaroniaBackOffice
 
             _valueStyle = new GUIStyle
             {
-                fontSize  = 13,
+                fontSize  = Mathf.RoundToInt(13 * scale),
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleLeft,
                 normal    = { textColor = ColGood },
@@ -275,15 +291,15 @@ namespace VaroniaBackOffice
 
             _keyStyle = new GUIStyle
             {
-                fontSize  = 9,
+                fontSize  = Mathf.RoundToInt(9 * scale),
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleLeft,
-                normal    = { textColor = ColValue },
+                normal    = { textColor = ColGood },
             };
 
             _descStyle = new GUIStyle
             {
-                fontSize  = 9,
+                fontSize  = Mathf.RoundToInt(9 * scale),
                 fontStyle = FontStyle.Normal,
                 alignment = TextAnchor.MiddleLeft,
                 normal    = { textColor = ColMuted },

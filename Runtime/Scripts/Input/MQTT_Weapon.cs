@@ -14,11 +14,18 @@ namespace VBO_Ultimate.Runtime.Scripts.Input
         Coroutine coroutine_;
         private string MacAdress;
         private int _weaponIndex;
+        
+        public bool ForceConnected = false;
+        
 
         private readonly ConcurrentQueue<Action> _mainThreadQueue = new ConcurrentQueue<Action>();
 
         public IEnumerator Start()
         {
+
+            if (ForceConnected)
+                IsConnected = true;
+            
             var tracking = GetComponentInParent<VaroniaWeaponTracking>();
             _weaponIndex = tracking != null ? tracking.weaponIndex : 0;
 
@@ -59,9 +66,12 @@ namespace VBO_Ultimate.Runtime.Scripts.Input
             {
                 try
                 {
-                    if (coroutine_ != null)
-                        StopCoroutine(coroutine_);
-                    coroutine_ = StartCoroutine(CheckCo());
+                    if (!ForceConnected)
+                    {
+                        if (coroutine_ != null)
+                            StopCoroutine(coroutine_);
+                        coroutine_ = StartCoroutine(CheckCo());
+                    }
 
                     if (title == "BAT") // Receive battery info
                     {

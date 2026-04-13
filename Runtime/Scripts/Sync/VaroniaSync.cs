@@ -3,17 +3,23 @@ using UnityEngine;
 namespace VaroniaBackOffice
 {
     /// <summary>
-    /// Applique SyncPos + SyncQuaternion sur son transform et instancie UNE SEULE FOIS
-    /// le boundaryPrefab, lequel gère lui-même toutes les Boundary.
+    /// Applies SyncPos + SyncQuaternion on its transform and instantiates ONCE
+    /// the boundaryPrefab, which manages all Boundaries itself.
     /// </summary>
     public class VaroniaSync : MonoBehaviour
     {
-        // ─── Inspector ────────────────────────────────────────────────────────────
+        // ─── Inspector ───────────────────────────────────────────────────────────
 
-        [Tooltip("Prefab instancié une fois. Doit avoir un composant BoundaryVisual.")]
+        [Tooltip("Prefab instantiated once. Must have a BoundaryVisual component.")]
         [SerializeField] private GameObject boundaryPrefab;
 
-        // ─── Private ──────────────────────────────────────────────────────────────
+        [Tooltip("If true, instantiates the boundaryPrefab during Apply.")]
+        [SerializeField] private bool instantiateBoundary = true;
+
+        [Tooltip("If true, the instantiated GameObject will be disabled (SetActive false) at instantiation.")]
+        [SerializeField] private bool startBoundaryInactive = false;
+
+        // ─── Private ─────────────────────────────────────────────────────────────
 
         private GameObject _instance;
 
@@ -43,14 +49,14 @@ namespace VaroniaBackOffice
             Apply();
         }
 
-        // ─── Apply ────────────────────────────────────────────────────────────────
+        // ─── Apply ───────────────────────────────────────────────────────────────
 
         public void Apply()
         {
             var spatial = VaroniaSpatialLoader.Data as Spatial;
             if (spatial == null)
             {
-                Debug.LogWarning("[VaroniaSync] Données Spatial introuvables.");
+                Debug.LogWarning("[VaroniaSync] Spatial data not found.");
                 return;
             }
 
@@ -61,23 +67,30 @@ namespace VaroniaBackOffice
             if (spatial.SyncQuaterion != null)
                 transform.rotation = spatial.SyncQuaterion.asQuat();
 
-            // ── Prefab (une seule instance) ───────────────────────────────────────
+            // ── Prefab (single instance) ─────────────────────────────────────────
             if (_instance != null)
                 Destroy(_instance);
 
+            if (!instantiateBoundary)
+                return;
+
             if (boundaryPrefab == null)
             {
-                Debug.LogWarning("[VaroniaSync] Aucun boundaryPrefab assigné.");
+                Debug.LogWarning("[VaroniaSync] No boundaryPrefab assigned.");
                 return;
             }
 
             _instance = Instantiate(boundaryPrefab, transform);
             _instance.transform.localPosition = new Vector3(0,0.1f,0);
+            if (startBoundaryInactive)
+                _instance.SetActive(false);
             
         }
 
-        // ─── Accessors (Editor) ───────────────────────────────────────────────────
+        // ─── Accessors (Editor) ──────────────────────────────────────────────────
 
-        public bool HasPrefab => boundaryPrefab != null;
+        public bool HasPrefab              => boundaryPrefab != null;
+        public bool InstantiateBoundary    => instantiateBoundary;
+        public bool StartBoundaryInactive  => startBoundaryInactive;
     }
 }

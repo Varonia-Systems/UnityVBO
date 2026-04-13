@@ -25,3 +25,7 @@ MonoBehaviour:
     mesh: {fileID: 7684625086359004581, guid: 3d75dd32c3cc854439785aac0fcdc9b7, type: 3}
     positionOffset: {x: 0, y: 0.05, z: 0}
     rotationOffset: {x: 60, y: -90, z: 0}
+  - friendlyName: HK416
+    mesh: {fileID: -6263947374776980303, guid: 0e0c4e581369fb04f9cc267dc13c5474, type: 3}
+    positionOffset: {x: 0, y: 0, z: 0}
+    rotationOffset: {x: 0, y: 90, z: 0}

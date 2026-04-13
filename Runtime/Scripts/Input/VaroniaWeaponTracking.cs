@@ -20,6 +20,8 @@ namespace VBO_Ultimate.Runtime.Scripts.Input
         [Header("Override AutoFind")]
         [Tooltip("Si activé, override autoFind du ItemTracking avec les paramètres ci-dessous.")]
         public bool overrideAutoFind = false;
+        public enum TrackingParentMode {ThisTransform, DirectItemTracking }
+        public TrackingParentMode parentTrackingMode = TrackingParentMode.ThisTransform;
 
         // ── SteamVR Override ──
 #if STEAMVR_ENABLED
@@ -75,7 +77,7 @@ namespace VBO_Ultimate.Runtime.Scripts.Input
                 if (trackerFollower == null)
                     trackerFollower = spawned.GetComponentInChildren<ItemTracking>();
 
-                ApplyAutoFindOverride();
+                ApplyTrackerSettings();
             }
             else
             {
@@ -83,9 +85,14 @@ namespace VBO_Ultimate.Runtime.Scripts.Input
             }
         }
 
-        private void ApplyAutoFindOverride()
+        private void ApplyTrackerSettings()
         {
-            if (trackerFollower == null || !overrideAutoFind) return;
+            if (trackerFollower == null) return;
+
+            // Toujours appliquer le mode de parenté
+            trackerFollower.applyToParent = (parentTrackingMode == TrackingParentMode.ThisTransform);
+
+            if (!overrideAutoFind) return;
 
             trackerFollower.backend = overriddenBackend;
 

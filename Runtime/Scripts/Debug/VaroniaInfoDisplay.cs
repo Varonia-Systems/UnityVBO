@@ -25,6 +25,10 @@ namespace VaroniaBackOffice
         [SerializeField] private float         margin = 12f;
         [SerializeField] private Vector2       size   = new Vector2(200f, 130f);
 
+        /// <summary>Facteur d'échelle manuel (1 = 1080p).</summary>
+        [Header("UI Scale")]
+        public float scaleFactor = 1f;
+
         [Header("Camera")]
         [SerializeField] private Camera _camera;
 
@@ -45,6 +49,7 @@ namespace VaroniaBackOffice
         // ─── Styles ───────────────────────────────────────────────────────────────
 
         private bool      _stylesBuilt;
+        private float     _lastScale = 1f;
         private GUIStyle  _bgStyle;
         private GUIStyle  _labelStyle;
         private GUIStyle  _valueStyle;
@@ -148,38 +153,43 @@ namespace VaroniaBackOffice
         private void OnMovieChanged()
         {
             if (BackOfficeVaronia.Instance != null)
-                show = BackOfficeVaronia.Instance.config.hideMode == 0;
+            {
+                var mode = BackOfficeVaronia.Instance.config.DeviceMode;
+                bool isSpectator = mode == DeviceMode.Server_Spectator || mode == DeviceMode.Client_Spectator;
+                show = !isSpectator && BackOfficeVaronia.Instance.config.hideMode == 0;
+            }
         }
 
-        bool show;
+        bool show = false;
         
         private void OnGUI()
         {
             if(!show) return;
             
-            EnsureStyles();
+            float scale = (Screen.height / 1080f) * scaleFactor;
+            EnsureStyles(scale);
 
             bool mqttConnected = MqttClient.IsConnected__;
-            Rect panel = GetPanelRect();
+            Rect panel = GetPanelRect(scale);
 
             // ── Background ──
             GUI.DrawTexture(panel, _bgTex);
 
             // ── Left accent bar ──
             GUI.DrawTexture(
-                new Rect(panel.x, panel.y, 3f, panel.height),
+                new Rect(panel.x, panel.y, 3f * scale, panel.height),
                 mqttConnected ? _accentTex : _pillBadTex
             );
 
             float rowH = panel.height / 6f;
-            float textX = panel.x + 12f;
-            float textW = panel.width - 60f;
-            float valX  = panel.x + panel.width - 90f;
-            float valW  = 86f;
+            float textX = panel.x + 12f * scale;
+            float textW = panel.width - 60f * scale;
+            float valX  = panel.x + panel.width - 90f * scale;
+            float valW  = 86f * scale;
 
             // ── Row 1 : Game ──
-            GUI.Label(new Rect(textX, panel.y + rowH * 0f + 4f, textW, rowH), "GAME", _labelStyle);
-            GUI.Label(new Rect(valX,  panel.y + rowH * 0f + 4f, valW,  rowH), _gameVersion, _valueStyle);
+            GUI.Label(new Rect(textX, panel.y + rowH * 0f + 4f * scale, textW, rowH), "GAME", _labelStyle);
+            GUI.Label(new Rect(valX,  panel.y + rowH * 0f + 4f * scale, valW,  rowH), _gameVersion, _valueStyle);
 
             // ── Row 2 : Back Office ──
             GUI.Label(new Rect(textX, panel.y + rowH * 1f,       textW, rowH), "BACK OFFICE", _labelStyle);
@@ -202,12 +212,12 @@ namespace VaroniaBackOffice
             GUI.Label(new Rect(valX,  panel.y + rowH * 4f,       valW,  rowH), _headsetName ?? "—", _valueStyle);
 
             // ── Row 6 : MQTT pill ──
-            GUI.Label(new Rect(textX, panel.y + rowH * 5f - 2f, textW, rowH), "MQTT", _labelStyle);
+            GUI.Label(new Rect(textX, panel.y + rowH * 5f - 2f * scale, textW, rowH), "MQTT", _labelStyle);
 
             _pillStyle.normal.background = mqttConnected ? _pillGoodTex : _pillBadTex;
             _pillStyle.normal.textColor  = mqttConnected ? ColGood      : ColBad;
             GUI.Label(
-                new Rect(valX, panel.y + rowH * 5f,  valW, rowH - 4f),
+                new Rect(valX, panel.y + rowH * 5f,  valW, rowH - 4f * scale),
                 mqttConnected ? "CONNECTED" : "OFFLINE",
                 _pillStyle
             );
@@ -215,39 +225,41 @@ namespace VaroniaBackOffice
 
         // ─── Helpers ──────────────────────────────────────────────────────────────
 
-        private Rect GetPanelRect()
+        private Rect GetPanelRect(float scale)
         {
-            float w = size.x, h = size.y;
+            float w = size.x * scale, h = size.y * scale;
             float x, y;
+            float mx = margin * scale, my = margin * scale;
             switch (corner)
             {
                 case DisplayCorner.TopLeft:
-                    x = margin; y = margin; break;
+                    x = mx; y = my; break;
                 case DisplayCorner.TopRight:
-                    x = Screen.width - w - margin; y = margin; break;
+                    x = Screen.width - w - mx; y = my; break;
                 case DisplayCorner.BottomLeft:
-                    x = margin; y = Screen.height - h - margin; break;
+                    x = mx; y = Screen.height - h - my; break;
                 default: // BottomRight
-                    x = Screen.width - w - margin; y = Screen.height - h - margin; break;
+                    x = Screen.width - w - mx; y = Screen.height - h - my; break;
             }
             return new Rect(x, y, w, h);
         }
 
-        private void EnsureStyles()
+        private void EnsureStyles(float scale)
         {
-            if (_stylesBuilt) return;
+            if (_stylesBuilt && Mathf.Approximately(scale, _lastScale)) return;
             _stylesBuilt = true;
+            _lastScale   = scale;
 
-            _bgTex = MakeTex(ColBg);
-            _accentTex   = MakeTex(ColGood);
-            _pillGoodTex = MakeTex(new Color(ColGood.r, ColGood.g, ColGood.b, 0.15f));
-            _pillBadTex  = MakeTex(new Color(ColBad.r,  ColBad.g,  ColBad.b,  0.15f));
+            if (_bgTex == null)         _bgTex       = MakeTex(ColBg);
+            if (_accentTex == null)     _accentTex   = MakeTex(ColGood);
+            if (_pillGoodTex == null)   _pillGoodTex = MakeTex(new Color(ColGood.r, ColGood.g, ColGood.b, 0.15f));
+            if (_pillBadTex == null)    _pillBadTex  = MakeTex(new Color(ColBad.r,  ColBad.g,  ColBad.b,  0.15f));
 
             _bgStyle = new GUIStyle { normal = { background = _bgTex } };
 
             _labelStyle = new GUIStyle
             {
-                fontSize  = 9,
+                fontSize  = Mathf.RoundToInt(9 * scale),
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleLeft,
                 normal    = { textColor = ColMuted },
@@ -255,7 +267,7 @@ namespace VaroniaBackOffice
 
             _valueStyle = new GUIStyle
             {
-                fontSize  = 11,
+                fontSize  = Mathf.RoundToInt(11 * scale),
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleRight,
                 normal    = { textColor = ColValue },
@@ -263,11 +275,10 @@ namespace VaroniaBackOffice
 
             _pillStyle = new GUIStyle
             {
-                fontSize  = 9,
+                fontSize  = Mathf.RoundToInt(9 * scale),
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleCenter,
-                normal    = { textColor = ColGood, background = _pillGoodTex },
-                padding   = new RectOffset(4, 4, 2, 2),
+                padding   = new RectOffset(Mathf.RoundToInt(4 * scale), Mathf.RoundToInt(4 * scale), Mathf.RoundToInt(2 * scale), Mathf.RoundToInt(2 * scale)),
             };
         }
 

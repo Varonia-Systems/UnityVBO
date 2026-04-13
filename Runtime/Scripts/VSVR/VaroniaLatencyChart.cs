@@ -19,13 +19,13 @@ namespace VaroniaBackOffice
 {
     /// <summary>
     /// Graphe de latence ALVR temps réel via WebSocket ws://localhost:8082/api/events.
-    /// Se connecte automatiquement au Start. Rendu via OnGUI — aucun Canvas requis.
+    /// Se connecte automatiquement au Start. Rendu via RenderTexture + GL — 1 seul draw call OnGUI par frame.
     /// </summary>
     public class VaroniaLatencyChart : MonoBehaviour
     {
-        
+
 #if STEAMVR_ENABLED
-        
+
         // ─── ALVR Statistics ──────────────────────────────────────────────────────
 
         public class StatisticsSummaryItem
@@ -55,6 +55,7 @@ namespace VaroniaBackOffice
         [SerializeField] private DisplayCorner corner = DisplayCorner.BottomLeft;
         [SerializeField] private float         margin = 12f;
         [SerializeField] private Vector2       size   = new Vector2(340f, 160f);
+        public float scaleFactor = 1f;
 
         [Header("VSVR")]
         [SerializeField] private string wsUrl          = "ws://localhost:8082/api/events";
@@ -91,15 +92,26 @@ namespace VaroniaBackOffice
         static readonly Color ColMutedFg = new Color(0.55f, 0.55f, 0.62f, 1f);
         static readonly Color ColValue   = new Color(0.92f, 0.92f, 0.95f, 1f);
         static readonly Color ColDivider = new Color(1f,    1f,    1f,    0.06f);
+        static readonly Color ColAvgLine = new Color(1f,    1f,    1f,    0.5f);
+
+        // Pre-computed muted colors (avoid new Color() in hot path)
+        static readonly Color ColGoodMuted = new Color(ColGood.r, ColGood.g, ColGood.b, 0.15f);
+        static readonly Color ColWarnMuted = new Color(ColWarn.r, ColWarn.g, ColWarn.b, 0.15f);
+        static readonly Color ColBadMuted  = new Color(ColBad.r,  ColBad.g,  ColBad.b,  0.15f);
 
         // ─── WebSocket state ──────────────────────────────────────────────────────
 
-        private volatile bool                  _needStop;
-        private volatile bool                  _wsConnected;
-        private StatisticsSummaryItem          _live;          // written from thread, read on main
-        private volatile bool                  _hasNewData;
-        private readonly List<StatisticsSummaryItem> _avgBuffer = new List<StatisticsSummaryItem>();
-        private DateTime                       _lastMessageTime = DateTime.UtcNow;
+        private volatile bool         _needStop;
+        private volatile bool         _wsConnected;
+        private StatisticsSummaryItem _live;
+        private volatile bool         _hasNewData;
+        private DateTime              _lastMessageTime = DateTime.UtcNow;
+
+        // ─── Avg ring buffer ──────────────────────────────────────────────────────
+        private const int AvgCapacity = 600;
+        private readonly StatisticsSummaryItem[] _avgRing = new StatisticsSummaryItem[AvgCapacity];
+        private int _avgHead;
+        private int _avgCount;
 
         // ─── Chart data ───────────────────────────────────────────────────────────
         private float[] _buffer;
@@ -107,116 +119,226 @@ namespace VaroniaBackOffice
         private int     _writeIdx;
         private float   _lastValue = -1f;
 
-        private int     _lostStreamCount = 0;
-        private bool    _isCurrentlyLost = false;
-        private bool    _timeoutEventFired = false;
-        private float   _lastTickTime = 0f;
+        private int     _lostStreamCount;
+        private bool    _isCurrentlyLost;
+        private bool    _timeoutEventFired;
+        private float   _lastTickTime;
+
+        // ─── RenderTexture for chart ──────────────────────────────────────────────
+        private RenderTexture _chartRT;
+        private Material      _glMat;
+        private bool          _rtDirty = true;
+
+        // chart sub-rect offsets (pixel coords inside the RT)
+        private float _chartOfsX, _chartOfsY, _chartW, _chartH;
+
+        // ─── Cached data (computed in Update 10Hz, consumed in OnGUI) ─────────────
+        private readonly StatisticsSummaryItem _cachedAvg = new StatisticsSummaryItem();
+        private double _cachedAvgTotal5s;
+        private bool   _hasAvgData;
+
+        private string _cachedVsvrLabel    = "VSVR";
+        private string _cachedStatNet      = "—";
+        private string _cachedStatTot      = "—";
+        private string _cachedStatEnc      = "—";
+        private string _cachedStatDec      = "—";
+        private string _cachedStatFps      = "—";
+        private string _cachedAvgNet       = "—";
+        private string _cachedAvgTot       = "—";
+        private string _cachedAvgEnc       = "—";
+        private string _cachedAvgDec       = "—";
+        private string _cachedAvgLost      = "—";
+        private string _cachedAvgLineLabel = "";
+
+        private Color _cachedColNet, _cachedColTot, _cachedColEnc, _cachedColDec;
+        private Color _cachedAvgColNet, _cachedAvgColTot, _cachedAvgColEnc, _cachedAvgColDec;
+        private bool  _cachedHasLive;
 
         // ─── Styles ───────────────────────────────────────────────────────────────
 
         private bool      _stylesBuilt;
+        private float     _lastScale;
         private GUIStyle  _labelStyle;
-        private GUIStyle  _valueStyle;
         private GUIStyle  _pillStyle;
         private GUIStyle  _statLabelStyle;
         private GUIStyle  _statValueStyle;
-        private Texture2D _texBg, _texGood, _texWarn, _texBad, _texMuted, _texDivider, _texAccent;
-        private Texture2D _texPillGood, _texPillBad, _texPillMuted, _texTotalMuted, _texAvgLine;
-        private Color     _currentAccent;
+        private Texture2D _texPillGood, _texPillBad;
+
+        // ─── String format helpers (no boxing) ────────────────────────────────────
+
+        private static string FormatF0(double v)
+        {
+            if (v < 0) return "—";
+            return ((long)v).ToString();
+        }
+
+        private static string FormatF1(double v)
+        {
+            if (v < 0) return "—";
+            long integer = (long)v;
+            long frac = (long)((v - integer) * 10 + 0.5) % 10;
+            return string.Concat(integer.ToString(), ".", frac.ToString());
+        }
 
         // ─────────────────────────────────────────────────────────────────────────
 
         private void Awake()
         {
-            _buffer = new float[maxBars];
+            _buffer      = new float[maxBars];
             _totalBuffer = new float[maxBars];
             for (int i = 0; i < maxBars; i++)
             {
-                _buffer[i] = -1f;
+                _buffer[i]      = -1f;
                 _totalBuffer[i] = -1f;
             }
         }
 
-
         private bool _ready;
-        
+
         private IEnumerator Start()
         {
             yield return new WaitForSeconds(2);
-            
+
             CVRSystem vr = SteamVRBridge.GetSystem();
             if (vr == null) Destroy(this);
 
-            var _headsetName = "";
-            var sb = new System.Text.StringBuilder(256);
+            var sb = new StringBuilder(256);
             ETrackedPropertyError err = ETrackedPropertyError.TrackedProp_Success;
             vr.GetStringTrackedDeviceProperty(0, ETrackedDeviceProperty.Prop_ModelNumber_String, sb, 256, ref err);
-            _headsetName = sb.Length > 0 ? sb.ToString() : "—";
-                
-            if(_headsetName != "Miramar" && _headsetName != "Oculus Quest2")
+            string headsetName = sb.Length > 0 ? sb.ToString() : "—";
+
+            if (headsetName != "Miramar" && headsetName != "Oculus Quest2")
                 Destroy(this);
-            
-                
+
+            EnsureRT();
             StartWebSocket();
-            
-            
+
             _ready = true;
-            
         }
 
         private void OnDestroy()
         {
             _needStop = true;
 
-            if (_texBg)       Destroy(_texBg);
-            if (_texGood)     Destroy(_texGood);
-            if (_texWarn)     Destroy(_texWarn);
-            if (_texBad)      Destroy(_texBad);
-            if (_texMuted)    Destroy(_texMuted);
-            if (_texDivider)  Destroy(_texDivider);
-            if (_texAccent)   Destroy(_texAccent);
+            if (_chartRT)    { _chartRT.Release(); Destroy(_chartRT); }
+            if (_glMat)      Destroy(_glMat);
             if (_texPillGood) Destroy(_texPillGood);
             if (_texPillBad)  Destroy(_texPillBad);
-            if (_texPillMuted)Destroy(_texPillMuted);
-            if (_texTotalMuted) Destroy(_texTotalMuted);
-            if (_texAvgLine)    Destroy(_texAvgLine);
-            if (_texGoodMuted)  Destroy(_texGoodMuted);
-            if (_texWarnMuted)  Destroy(_texWarnMuted);
-            if (_texBadMuted)   Destroy(_texBadMuted);
         }
 
-        // ─── Update — consomme les nouvelles données sur le main thread ───────────
+        // ─── RenderTexture setup ──────────────────────────────────────────────────
+
+        private void EnsureRT()
+        {
+            float scale = (Screen.height / 1080f) * scaleFactor;
+            int rtW = (int)(size.x * scale);
+            int rtH = (int)(size.y * scale);
+
+            if (_chartRT == null || _chartRT.width != rtW || _chartRT.height != rtH)
+            {
+                if (_chartRT) { _chartRT.Release(); Destroy(_chartRT); }
+                _chartRT = new RenderTexture(rtW, rtH, 0, RenderTextureFormat.ARGB32);
+                _chartRT.filterMode = FilterMode.Point;
+                _chartRT.hideFlags  = HideFlags.HideAndDontSave;
+                _chartRT.Create();
+                _rtDirty = true;
+            }
+
+            if (_glMat == null)
+            {
+                _glMat = new Material(Shader.Find("Hidden/Internal-Colored"));
+                _glMat.hideFlags = HideFlags.HideAndDontSave;
+                _glMat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                _glMat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                _glMat.SetInt("_Cull",     (int)UnityEngine.Rendering.CullMode.Off);
+                _glMat.SetInt("_ZWrite",   0);
+            }
+        }
+
+        // ─── Update ───────────────────────────────────────────────────────────────
 
         private void Update()
         {
             if (!_ready) return;
 
-            // Timeout check (no message for > 0.1s after first 5s of uptime)
             if (!_timeoutEventFired && (DateTime.UtcNow - _lastMessageTime).TotalSeconds > 0.1 && Time.time > 5)
             {
                 _timeoutEventFired = true;
                 OnWebsocketTimeout();
             }
 
-            // Fréquence d'update forcée à 0.1s
             if (Time.time - _lastTickTime >= 0.1f)
             {
                 _lastTickTime = Time.time;
 
                 if (_live != null)
                 {
-                    // Si on a reçu de nouvelles données réelles, on réinitialise le flag timeout
                     if (_hasNewData && _live.network_latency_ms != -1)
-                    {
                         _timeoutEventFired = false;
-                    }
 
                     AddLatencyValue((float)_live.network_latency_ms, (float)_live.total_latency_ms);
-                    _avgBuffer.Add(_live);
-                    if (_avgBuffer.Count > 600) _avgBuffer.RemoveAt(0);
-                    
+
+                    _avgRing[_avgHead] = _live;
+                    _avgHead = (_avgHead + 1) % AvgCapacity;
+                    if (_avgCount < AvgCapacity) _avgCount++;
+
                     _hasNewData = false;
+
+                    RebuildCachedData();
+                    _rtDirty = true;
                 }
+            }
+        }
+
+        private void RebuildCachedData()
+        {
+            var live = _live;
+            _cachedHasLive = live != null;
+            if (!_cachedHasLive) return;
+
+            _cachedVsvrLabel = live.video_mbits_per_sec > 0
+                ? string.Concat("VSVR (", FormatF1(live.video_mbits_per_sec), " Mbps)")
+                : "VSVR";
+
+            _cachedStatNet = live.network_latency_ms >= 0 ? string.Concat(FormatF0(live.network_latency_ms), "ms") : "—";
+            _cachedStatTot = live.total_latency_ms   >= 0 ? string.Concat(FormatF0(live.total_latency_ms), "ms")   : "—";
+            _cachedStatEnc = live.encode_latency_ms  >= 0 ? string.Concat(FormatF0(live.encode_latency_ms), "ms")  : "—";
+            _cachedStatDec = live.decode_latency_ms  >= 0 ? string.Concat(FormatF0(live.decode_latency_ms), "ms")  : "—";
+            _cachedStatFps = live.client_fps         >= 0 ? FormatF0(live.client_fps)                               : "—";
+
+            _cachedColNet = GetColor((float)live.network_latency_ms);
+            _cachedColTot = GetTotalColor((float)live.total_latency_ms, false);
+            _cachedColEnc = GetEncodeColor((float)live.encode_latency_ms);
+            _cachedColDec = GetDecodeColor((float)live.decode_latency_ms);
+
+            _hasAvgData = _avgCount > 0;
+            if (_hasAvgData)
+            {
+                CalculerMoyenneRing(_cachedAvg);
+
+                _cachedAvgNet  = _cachedAvg.network_latency_ms >= 0 ? string.Concat(FormatF0(_cachedAvg.network_latency_ms), "ms") : "—";
+                _cachedAvgTot  = _cachedAvg.total_latency_ms   >= 0 ? string.Concat(FormatF0(_cachedAvg.total_latency_ms), "ms")   : "—";
+                _cachedAvgEnc  = _cachedAvg.encode_latency_ms  >= 0 ? string.Concat(FormatF0(_cachedAvg.encode_latency_ms), "ms")  : "—";
+                _cachedAvgDec  = _cachedAvg.decode_latency_ms  >= 0 ? string.Concat(FormatF0(_cachedAvg.decode_latency_ms), "ms")  : "—";
+                _cachedAvgLost = _lostStreamCount.ToString();
+
+                _cachedAvgColNet = GetColor((float)_cachedAvg.network_latency_ms);
+                _cachedAvgColTot = GetTotalColor((float)_cachedAvg.total_latency_ms, false);
+                _cachedAvgColEnc = GetEncodeColor((float)_cachedAvg.encode_latency_ms);
+                _cachedAvgColDec = GetDecodeColor((float)_cachedAvg.decode_latency_ms);
+
+                int countFor5s = 300;
+                int count = _avgCount < countFor5s ? _avgCount : countFor5s;
+                double sumTotal = 0;
+                int validCount = 0;
+                for (int i = 0; i < count; i++)
+                {
+                    int idx = ((_avgHead - 1 - i) % AvgCapacity + AvgCapacity) % AvgCapacity;
+                    double v = _avgRing[idx].total_latency_ms;
+                    if (v != -1) { sumTotal += v; validCount++; }
+                }
+                _cachedAvgTotal5s = validCount > 0 ? sumTotal / validCount : 0;
+                _cachedAvgLineLabel = string.Concat("avg ", FormatF1(_cachedAvgTotal5s));
             }
         }
 
@@ -233,36 +355,34 @@ namespace VaroniaBackOffice
             };
 
             _live       = lostStats;
-            _hasNewData = true; // Forcer la mise à jour pour enregistrer les -1
+            _hasNewData = true;
         }
 
         // ─── Public API ───────────────────────────────────────────────────────────
 
-        /// <summary>Ajoute une valeur de latence en ms. -1 = pas de donnée.</summary>
         public void AddLatencyValue(float latency, float totalLatency = -1f)
         {
-            // Detection de perte de flux (transition vers -1)
             if (latency == -1f)
             {
-                if (!_isCurrentlyLost)
-                {
-                    _lostStreamCount++;
-                    _isCurrentlyLost = true;
-                }
+                if (!_isCurrentlyLost) { _lostStreamCount++; _isCurrentlyLost = true; }
             }
             else
             {
-                // Flux retrouvé
                 _isCurrentlyLost = false;
             }
 
-            _buffer[_writeIdx] = latency;
+            _buffer[_writeIdx]      = latency;
             _totalBuffer[_writeIdx] = totalLatency;
             _writeIdx = (_writeIdx + 1) % maxBars;
             _lastValue = latency;
         }
 
-        public StatisticsSummaryItem GetAverage() => CalculerMoyenne(_avgBuffer);
+        public StatisticsSummaryItem GetAverage()
+        {
+            var result = new StatisticsSummaryItem();
+            CalculerMoyenneRing(result);
+            return result;
+        }
 
         // ─── WebSocket ────────────────────────────────────────────────────────────
 
@@ -292,7 +412,6 @@ namespace VaroniaBackOffice
 
                     while (ws.State == WebSocketState.Open && !_needStop)
                     {
-                        // Timeout check
                         if ((DateTime.UtcNow - _lastMessageTime).TotalSeconds > timeoutSeconds)
                             _wsConnected = false;
 
@@ -324,10 +443,8 @@ namespace VaroniaBackOffice
                                             _live       = stats;
                                             _hasNewData = true;
 
-
                                             if (stats.network_latency_ms > 13)
                                                 Debug.Log($"[VSVR] /!\\ Network Latency Alert '{stats.network_latency_ms}' /!\\");
-
                                         }
                                     }
                                     catch { /* ignore parse errors */ }
@@ -336,7 +453,7 @@ namespace VaroniaBackOffice
                                 }
                             }
                         }
-                        catch { /* socket error — loop will exit on next state check */ }
+                        catch { /* socket error */ }
                     }
                 }
 
@@ -353,33 +470,206 @@ namespace VaroniaBackOffice
                 .ToList();
         }
 
-        private static StatisticsSummaryItem CalculerMoyenne(List<StatisticsSummaryItem> valeurs)
+        private void CalculerMoyenneRing(StatisticsSummaryItem result)
         {
-            var result = new StatisticsSummaryItem();
-            if (valeurs == null || valeurs.Count == 0) return result;
+            result.total_latency_ms    = 0;
+            result.network_latency_ms  = 0;
+            result.encode_latency_ms   = 0;
+            result.decode_latency_ms   = 0;
+            result.client_fps          = 0;
+            result.video_mbits_per_sec = 0;
 
-            var validTotal = valeurs.Where(v => v.total_latency_ms != -1).Select(v => v.total_latency_ms).ToList();
-            var validNet   = valeurs.Where(v => v.network_latency_ms != -1).Select(v => v.network_latency_ms).ToList();
-            var validEnc   = valeurs.Where(v => v.encode_latency_ms != -1).Select(v => v.encode_latency_ms).ToList();
-            var validDec   = valeurs.Where(v => v.decode_latency_ms != -1).Select(v => v.decode_latency_ms).ToList();
-            var validFps   = valeurs.Where(v => v.client_fps > 0).Select(v => v.client_fps).ToList();
-            var validBitrate = valeurs.Where(v => v.video_mbits_per_sec > 0).Select(v => v.video_mbits_per_sec).ToList();
+            if (_avgCount == 0) return;
 
-            result.total_latency_ms   = validTotal.Count > 0 ? validTotal.Average() : 0;
-            result.network_latency_ms = validNet.Count > 0 ? validNet.Average() : 0;
-            result.encode_latency_ms  = validEnc.Count > 0 ? validEnc.Average() : 0;
-            result.decode_latency_ms  = validDec.Count > 0 ? validDec.Average() : 0;
-            result.client_fps         = validFps.Count > 0 ? validFps.Average() : 0;
-            result.video_mbits_per_sec = validBitrate.Count > 0 ? validBitrate.Average() : 0;
+            double sumTotal = 0, sumNet = 0, sumEnc = 0, sumDec = 0, sumFps = 0, sumBitrate = 0;
+            int    cTotal = 0, cNet = 0, cEnc = 0, cDec = 0, cFps = 0, cBitrate = 0;
 
-            return result;
+            for (int i = 0; i < _avgCount; i++)
+            {
+                int idx = ((_avgHead - _avgCount + i) % AvgCapacity + AvgCapacity) % AvgCapacity;
+                var v = _avgRing[idx];
+                if (v == null) continue;
+
+                if (v.total_latency_ms   != -1) { sumTotal   += v.total_latency_ms;   cTotal++;   }
+                if (v.network_latency_ms != -1) { sumNet     += v.network_latency_ms; cNet++;     }
+                if (v.encode_latency_ms  != -1) { sumEnc     += v.encode_latency_ms;  cEnc++;     }
+                if (v.decode_latency_ms  != -1) { sumDec     += v.decode_latency_ms;  cDec++;     }
+                if (v.client_fps > 0)           { sumFps     += v.client_fps;          cFps++;     }
+                if (v.video_mbits_per_sec > 0)  { sumBitrate += v.video_mbits_per_sec; cBitrate++; }
+            }
+
+            result.total_latency_ms    = cTotal   > 0 ? sumTotal   / cTotal   : 0;
+            result.network_latency_ms  = cNet     > 0 ? sumNet     / cNet     : 0;
+            result.encode_latency_ms   = cEnc     > 0 ? sumEnc     / cEnc     : 0;
+            result.decode_latency_ms   = cDec     > 0 ? sumDec     / cDec     : 0;
+            result.client_fps          = cFps     > 0 ? sumFps     / cFps     : 0;
+            result.video_mbits_per_sec = cBitrate > 0 ? sumBitrate / cBitrate : 0;
         }
 
-        // ─── Rendering ────────────────────────────────────────────────────────────
+        // ─── GL Rendering into RenderTexture ──────────────────────────────────────
 
+        private void RenderToRT()
+        {
+            if (_chartRT == null || _glMat == null) return;
+
+            float scale = (Screen.height / 1080f) * scaleFactor;
+            float W = _chartRT.width;
+            float H = _chartRT.height;
+
+            RenderTexture prev = RenderTexture.active;
+            RenderTexture.active = _chartRT;
+            GL.Clear(true, true, Color.clear);
+
+            _glMat.SetPass(0);
+            GL.PushMatrix();
+            GL.LoadPixelMatrix(0, W, H, 0); // top-left origin
+
+            // ── Background ──
+            GLRect(0, 0, W, H, ColBg);
+
+            // ── Left accent bar ──
+            GLRect(0, 0, 3f * scale, H, GetColor(_lastValue));
+
+            float HeaderH = 22f * scale;
+            float StatsH  = 22f * scale;
+            float PadH    =  6f * scale;
+
+            // ── Dividers ──
+            float div1Y = HeaderH;
+            GLRect(8f * scale, div1Y, W - 16f * scale, 1f * scale, ColDivider);
+
+            float div2Y = div1Y + 1f * scale + StatsH;
+            GLRect(8f * scale, div2Y, W - 16f * scale, 1f * scale, ColDivider);
+
+            float div3Y = div2Y + 1f * scale + StatsH;
+            GLRect(8f * scale, div3Y, W - 16f * scale, 1f * scale, ColDivider);
+
+            // ── Chart bars ──
+            float chartX = 8f * scale;
+            float chartY = div3Y + PadH;
+            float chartW = W - 16f * scale;
+            float chartH = H - HeaderH - StatsH * 2f - PadH * 2f - 3f * scale;
+            float barW   = chartW / maxBars;
+
+            _chartOfsX = chartX;
+            _chartOfsY = chartY;
+            _chartW    = chartW;
+            _chartH    = chartH;
+
+            // Batch all quads in a single GL.Begin block for maximum throughput
+            GL.Begin(GL.QUADS);
+
+            for (int i = 0; i < maxBars; i++)
+            {
+                int idx = (_writeIdx + i) % maxBars;
+                float bx = chartX + i * barW;
+                float bw = barW > 1f * scale ? barW - 1f * scale : 1f * scale;
+
+                // 1. Total Latency (muted background)
+                float vt = _totalBuffer[idx];
+                if (vt > 0f)
+                {
+                    float barHT = Mathf.Clamp01(vt / maxTotalLatency) * chartH;
+                    float by = chartY + chartH - barHT;
+                    GL.Color(GetTotalBarColor(vt));
+                    GL.Vertex3(bx,      by,        0);
+                    GL.Vertex3(bx + bw, by,        0);
+                    GL.Vertex3(bx + bw, by + barHT, 0);
+                    GL.Vertex3(bx,      by + barHT, 0);
+                }
+                else if (vt == -1f)
+                {
+                    GL.Color(ColMuted);
+                    GL.Vertex3(bx,      chartY,          0);
+                    GL.Vertex3(bx + bw, chartY,          0);
+                    GL.Vertex3(bx + bw, chartY + chartH, 0);
+                    GL.Vertex3(bx,      chartY + chartH, 0);
+                }
+
+                // 2. Network Latency (foreground)
+                float v = _buffer[idx];
+                float barH = v < 0f ? (v == -1f ? chartH : 2f * scale) : Mathf.Clamp01(v / maxLatency) * chartH;
+                float ny = chartY + chartH - barH;
+                GL.Color(v == -1f ? ColMuted : GetBarColor(v));
+                GL.Vertex3(bx,      ny,        0);
+                GL.Vertex3(bx + bw, ny,        0);
+                GL.Vertex3(bx + bw, ny + barH, 0);
+                GL.Vertex3(bx,      ny + barH, 0);
+            }
+
+            // 3. Total latency connecting line segments
+            GL.Color(ColAvgLine);
+            for (int i = 1; i < maxBars; i++)
+            {
+                int idxPrev = (_writeIdx + i - 1) % maxBars;
+                int idxCurr = (_writeIdx + i) % maxBars;
+
+                float vPrev = _totalBuffer[idxPrev];
+                float vCurr = _totalBuffer[idxCurr];
+
+                if (vPrev > 0f && vCurr > 0f)
+                {
+                    float yCurr = chartY + chartH - (Mathf.Clamp01(vCurr / maxTotalLatency) * chartH);
+                    float lx = chartX + (i - 1) * barW;
+                    GL.Vertex3(lx,               yCurr,            0);
+                    GL.Vertex3(lx + barW,        yCurr,            0);
+                    GL.Vertex3(lx + barW,        yCurr + 1f * scale, 0);
+                    GL.Vertex3(lx,               yCurr + 1f * scale, 0);
+                }
+            }
+
+            // 4. Average line
+            if (_hasAvgData)
+            {
+                float lineY = chartY + chartH - (Mathf.Clamp01((float)_cachedAvgTotal5s / maxTotalLatency) * chartH);
+                GL.Color(ColAvgLine);
+                GL.Vertex3(chartX,          lineY,            0);
+                GL.Vertex3(chartX + chartW, lineY,            0);
+                GL.Vertex3(chartX + chartW, lineY + 1f * scale, 0);
+                GL.Vertex3(chartX,          lineY + 1f * scale, 0);
+            }
+
+            GL.End();
+
+            GL.PopMatrix();
+            RenderTexture.active = prev;
+
+            _rtDirty = false;
+        }
+
+        private static void GLRect(float x, float y, float w, float h, Color c)
+        {
+            GL.Begin(GL.QUADS);
+            GL.Color(c);
+            GL.Vertex3(x,     y,     0);
+            GL.Vertex3(x + w, y,     0);
+            GL.Vertex3(x + w, y + h, 0);
+            GL.Vertex3(x,     y + h, 0);
+            GL.End();
+        }
+
+        // ─── Color helpers ────────────────────────────────────────────────────────
+
+        private Color GetBarColor(float v)
+        {
+            if (v < 0f)               return ColMuted;
+            if (v >= redThreshold)    return ColBad;
+            if (v >= orangeThreshold) return ColWarn;
+            return ColGood;
+        }
+
+        private Color GetTotalBarColor(float v)
+        {
+            if (v < 0f)                    return ColMuted;
+            if (v >= redTotalThreshold)    return ColBadMuted;
+            if (v >= orangeTotalThreshold) return ColWarnMuted;
+            return ColGoodMuted;
+        }
+
+        // ─── OnGUI — single RT blit + text labels only ───────────────────────────
 
         private bool show;
-        
+
         private void OnEnable()
         {
             BackOfficeVaronia.OnMovieChanged += OnMovieChanged;
@@ -395,248 +685,125 @@ namespace VaroniaBackOffice
             if (BackOfficeVaronia.Instance != null)
                 show = BackOfficeVaronia.Instance.config.hideMode == 0;
         }
-        
-        
-        
+
         private void OnGUI()
         {
-            
             if (!_ready || !show) return;
-            
-            
+
             EnsureStyles();
+            EnsureRT();
 
-            Rect  panel  = GetPanelRect();
-            Color accent = GetColor(_lastValue);
+            if (_rtDirty)
+                RenderToRT();
 
-            // ── Background ──
-            GUI.DrawTexture(panel, _texBg);
+            float scale = (Screen.height / 1080f) * scaleFactor;
+            // ── Single draw call for entire panel ──
+            Rect panel = GetPanelRect();
+            GUI.DrawTexture(panel, _chartRT);
 
-            // ── Left accent bar ──
-            if (accent != _currentAccent)
-            {
-                _currentAccent = accent;
-                _texAccent.SetPixel(0, 0, accent);
-                _texAccent.Apply();
-            }
-            GUI.DrawTexture(new Rect(panel.x, panel.y, 3f, panel.height), _texAccent);
+            // ── Text overlays ──
 
-            const float HeaderH = 22f;
-            const float StatsH  = 22f;
-            const float PadH    =  6f;
+            float HeaderH = 22f * scale;
+            float StatsH  = 22f * scale;
 
-            // ── Header row ──
-            string vsvrLabel = "VSVR";
-            if (_live != null && _live.video_mbits_per_sec > 0)
-            {
-                vsvrLabel += $" ({_live.video_mbits_per_sec:F1} Mbps)";
-            }
-            
+            // Header
             GUI.Label(
-                new Rect(panel.x + 12f, panel.y + 4f, 150f, HeaderH),
-                vsvrLabel, _labelStyle
-            );
+                new Rect(panel.x + 12f * scale, panel.y + 4f * scale, 150f * scale, HeaderH),
+                _cachedVsvrLabel, _labelStyle);
 
             // Connection pill
             bool connected = _wsConnected;
-            string pillTxt = connected ? "● CONNECTED" : "● OFFLINE";
             _pillStyle.normal.textColor  = connected ? ColGood : ColBad;
             _pillStyle.normal.background = connected ? _texPillGood : _texPillBad;
             GUI.Label(
-                new Rect(panel.x + panel.width - 110f, panel.y + 5f, 106f, HeaderH - 4f),
-                pillTxt, _pillStyle
-            );
+                new Rect(panel.x + panel.width - 110f * scale, panel.y + 5f * scale, 106f * scale, HeaderH - 4f * scale),
+                connected ? "● CONNECTED" : "● OFFLINE", _pillStyle);
 
-            // Divider 1
-            float div1Y = panel.y + HeaderH;
-            GUI.DrawTexture(new Rect(panel.x + 8f, div1Y, panel.width - 16f, 1f), _texDivider);
-
-            // ── Stats row ──
-            float statsY = div1Y + 1f;
-            if (_live != null)
+            // Stats row
+            float statsY = panel.y + HeaderH + 1f * scale;
+            if (_cachedHasLive)
             {
-                DrawStat(panel.x, statsY, StatsH, panel.width,
-                    "NET", _live.network_latency_ms,
-                    "TOT", _live.total_latency_ms,
-                    "ENC", _live.encode_latency_ms,
-                    "DEC", _live.decode_latency_ms,
-                    "FPS", _live.client_fps,
-                    GetColor((float)_live.network_latency_ms),
-                    GetTotalColor((float)_live.total_latency_ms, false),
-                    GetEncodeColor((float)_live.encode_latency_ms),
-                    GetDecodeColor((float)_live.decode_latency_ms),
-                    ColValue, u5: ""
-                );
+                DrawStatCached(panel.x, statsY, StatsH, panel.width,
+                    "NET",  _cachedStatNet,  _cachedColNet,
+                    "TOT",  _cachedStatTot,  _cachedColTot,
+                    "ENC",  _cachedStatEnc,  _cachedColEnc,
+                    "DEC",  _cachedStatDec,  _cachedColDec,
+                    "FPS",  _cachedStatFps,  ColValue);
             }
             else
             {
-                GUI.Label(
-                    new Rect(panel.x + 12f, statsY + 4f, panel.width - 16f, StatsH),
-                    "En attente de données…", _statLabelStyle
-                );
+                GUI.Label(new Rect(panel.x + 12f * scale, statsY + 4f * scale, panel.width - 16f * scale, StatsH),
+                    "En attente de données…", _statLabelStyle);
             }
 
-            // Divider 2
-            float div2Y = statsY + StatsH;
-            GUI.DrawTexture(new Rect(panel.x + 8f, div2Y, panel.width - 16f, 1f), _texDivider);
-
-            // ── Averages row ──
-            float avgY = div2Y + 1f;
-            if (_avgBuffer.Count > 0)
+            // Averages row
+            float avgY = statsY + StatsH + 1f * scale;
+            if (_hasAvgData)
             {
-                var avg = CalculerMoyenne(_avgBuffer);
-                DrawStat(panel.x, avgY, StatsH, panel.width,
-                    "Avg.NET", avg.network_latency_ms,
-                    "Avg.TOT", avg.total_latency_ms,
-                    "AVG.ENC", avg.encode_latency_ms,
-                    "AVG.DEC", avg.decode_latency_ms,
-                    "LOST",    _lostStreamCount,
-                    GetColor((float)avg.network_latency_ms),
-                    GetTotalColor((float)avg.total_latency_ms, false),
-                    GetEncodeColor((float)avg.encode_latency_ms),
-                    GetDecodeColor((float)avg.decode_latency_ms),
-                    ColValue, u5: ""
-                );
+                DrawStatCached(panel.x, avgY, StatsH, panel.width,
+                    "Avg.NET", _cachedAvgNet,  _cachedAvgColNet,
+                    "Avg.TOT", _cachedAvgTot,  _cachedAvgColTot,
+                    "AVG.ENC", _cachedAvgEnc,  _cachedAvgColEnc,
+                    "AVG.DEC", _cachedAvgDec,  _cachedAvgColDec,
+                    "LOST",    _cachedAvgLost, ColValue);
             }
             else
             {
-                GUI.Label(
-                    new Rect(panel.x + 12f, avgY + 4f, panel.width - 16f, StatsH),
-                    "Calcul des moyennes…", _statLabelStyle
-                );
+                GUI.Label(new Rect(panel.x + 12f * scale, avgY + 4f * scale, panel.width - 16f * scale, StatsH),
+                    "Calcul des moyennes…", _statLabelStyle);
             }
 
-            // Divider 3
-            float div3Y = avgY + StatsH;
-            GUI.DrawTexture(new Rect(panel.x + 8f, div3Y, panel.width - 16f, 1f), _texDivider);
-
-            // ── Chart area ──
-            float chartX = panel.x + 8f;
-            float chartY = div3Y + PadH;
-            float chartW = panel.width - 16f;
-            float chartH = panel.height - HeaderH - StatsH * 2f - PadH * 2f - 3f;
-            float barW   = chartW / maxBars;
-
-            for (int i = 0; i < maxBars; i++)
+            // Avg line label
+            if (_hasAvgData)
             {
-                int   idx  = (_writeIdx + i) % maxBars;
-                
-                // 1. Total Latency (muted background)
-                float vt   = _totalBuffer[idx];
-                if (vt > 0f)
-                {
-                    float barHT = Mathf.Clamp01(vt / maxTotalLatency) * chartH;
-                    GUI.DrawTexture(
-                        new Rect(chartX + i * barW, chartY + chartH - barHT, Mathf.Max(barW - 1f, 1f), barHT),
-                        GetTotalTex(vt)
-                    );
-                }
-                else if (vt == -1f)
-                {
-                    // Draw full height gray for -1
-                    GUI.DrawTexture(
-                        new Rect(chartX + i * barW, chartY, Mathf.Max(barW - 1f, 1f), chartH),
-                        _texMuted
-                    );
-                }
-
-                // 2. Network Latency (foreground)
-                float v    = _buffer[idx];
-                float barH = v < 0f ? (v == -1f ? chartH : 2f) : Mathf.Clamp01(v / maxLatency) * chartH;
-                Texture2D barTex = v == -1f ? _texMuted : GetTex(v);
-
-                GUI.DrawTexture(
-                    new Rect(chartX + i * barW, chartY + chartH - barH, Mathf.Max(barW - 1f, 1f), barH),
-                    barTex
-                );
-            }
-
-            // 3. Line for all total data points (connect them)
-            // On dessine une ligne continue pour les points de total_latency_ms
-            for (int i = 1; i < maxBars; i++)
-            {
-                int   idxPrev = (_writeIdx + i - 1) % maxBars;
-                int   idxCurr = (_writeIdx + i) % maxBars;
-                
-                float vPrev = _totalBuffer[idxPrev];
-                float vCurr = _totalBuffer[idxCurr];
-                
-                if (vPrev > 0f && vCurr > 0f)
-                {
-                    float yPrev = chartY + chartH - (Mathf.Clamp01(vPrev / maxTotalLatency) * chartH);
-                    float yCurr = chartY + chartH - (Mathf.Clamp01(vCurr / maxTotalLatency) * chartH);
-                    
-                    // On dessine une ligne entre les deux points. Pour simplifier en OnGUI, on utilise DrawTexture par segments si horizontal.
-                    // Mais ici on veut une ligne qui relie les points. Comme barW est petit, on peut juste dessiner des petits segments.
-                    GUI.DrawTexture(new Rect(chartX + (i-1) * barW, yCurr, barW, 1f), _texAvgLine);
-                }
-            }
-
-            // 4. Average Line (last 5 seconds)
-            // On prend les ~300 derniers points si possible (pour 5s à 60Hz)
-            // Mais ici on a _avgBuffer qui contient les objets StatisticsSummaryItem.
-            if (_avgBuffer.Count > 0)
-            {
-                int countFor5s = 300; 
-                var lastItems = _avgBuffer.Skip(Math.Max(0, _avgBuffer.Count - countFor5s)).ToList();
-                double avgTotal = lastItems.Average(s => s.total_latency_ms);
-                
-                float lineY = chartY + chartH - (Mathf.Clamp01((float)avgTotal / maxTotalLatency) * chartH);
-                GUI.DrawTexture(new Rect(chartX, lineY, chartW, 1f), _texAvgLine);
-                
-                // Optionnel: petit label pour la moyenne
-                GUI.Label(new Rect(chartX + 2f, lineY - 12f, 50f, 12f), $"avg {avgTotal:F1}", _labelStyle);
+                float lineY = _chartOfsY + _chartH - (Mathf.Clamp01((float)_cachedAvgTotal5s / maxTotalLatency) * _chartH);
+                GUI.Label(new Rect(panel.x + _chartOfsX + 2f * scale, panel.y + lineY - 12f * scale, 50f * scale, 12f * scale),
+                    _cachedAvgLineLabel, _labelStyle);
             }
         }
 
-        // ─── Stats row helper ─────────────────────────────────────────────────────
+        // ─── Stats row helper (zero-alloc) ────────────────────────────────────────
 
-        private void DrawStat(float px, float py, float h, float totalW,
-            string l1, double v1, string l2, double v2,
-            string l3, double v3, string l4, double v4,
-            string l5, double v5, Color c1, Color c2, Color c3, Color c4, Color c5, string u5 = "ms")
+        private void DrawStatCached(float px, float py, float h, float totalW,
+            string l1, string v1, Color c1,
+            string l2, string v2, Color c2,
+            string l3, string v3, Color c3,
+            string l4, string v4, Color c4,
+            string l5, string v5, Color c5)
         {
-            float colW = (totalW - 16f) / 5f; 
-            
-            DrawStatCol(px + colW * 0f + 8f, py, colW, h, l1, v1, c1);
-            DrawStatCol(px + colW * 1f + 8f, py, colW, h, l2, v2, c2);
-            DrawStatCol(px + colW * 2f + 8f, py, colW, h, l3, v3, c3);
-            DrawStatCol(px + colW * 3f + 8f, py, colW, h, l4, v4, c4);
-            DrawStatCol(px + colW * 4f + 8f, py, colW, h, l5, v5, c5, unit: u5);
+            float scale = (Screen.height / 1080f) * scaleFactor;
+            float colW = (totalW - 16f * scale) / 5f;
+            DrawStatColCached(px + colW * 0f + 8f * scale, py, colW, h, l1, v1, c1);
+            DrawStatColCached(px + colW * 1f + 8f * scale, py, colW, h, l2, v2, c2);
+            DrawStatColCached(px + colW * 2f + 8f * scale, py, colW, h, l3, v3, c3);
+            DrawStatColCached(px + colW * 3f + 8f * scale, py, colW, h, l4, v4, c4);
+            DrawStatColCached(px + colW * 4f + 8f * scale, py, colW, h, l5, v5, c5);
         }
 
-        private void DrawStatCol(float x, float y, float w, float h,
-            string label, double value, Color valueColor, string unit = "ms")
+        private void DrawStatColCached(float x, float y, float w, float h,
+            string label, string formattedValue, Color valueColor)
         {
+            float scale = (Screen.height / 1080f) * scaleFactor;
             float halfH = h * 0.44f;
-            GUI.Label(new Rect(x, y + 1f,          w, halfH), label, _statLabelStyle);
-
+            GUI.Label(new Rect(x, y + 1f * scale,    w, halfH), label, _statLabelStyle);
             _statValueStyle.normal.textColor = valueColor;
-            
-            // Si c'est "LOST" ou "FPS", on n'affiche pas l'unité "ms"
-            bool noUnit = (label == "LOST" || label == "FPS" || label == "Avg.FPS");
-            string displayedUnit = noUnit ? "" : unit;
-            
-            GUI.Label(new Rect(x, y + halfH,       w, halfH + 2f),
-                value >= 0 ? $"{value:F0}{displayedUnit}" : "—", _statValueStyle);
+            GUI.Label(new Rect(x, y + halfH, w, halfH + 2f * scale), formattedValue, _statValueStyle);
         }
 
         // ─── Helpers ──────────────────────────────────────────────────────────────
 
         private Rect GetPanelRect()
         {
-            float w = size.x, h = size.y;
+            float scale = (Screen.height / 1080f) * scaleFactor;
+            float w = size.x * scale, h = size.y * scale;
+            float m = margin * scale;
             float x, y;
             switch (corner)
             {
-                case DisplayCorner.TopLeft:
-                    x = margin; y = margin; break;
-                case DisplayCorner.TopRight:
-                    x = Screen.width - w - margin; y = margin; break;
-                case DisplayCorner.BottomLeft:
-                    x = margin; y = Screen.height - h - margin; break;
-                default:
-                    x = Screen.width - w - margin; y = Screen.height - h - margin; break;
+                case DisplayCorner.TopLeft:     x = m;                       y = m;                        break;
+                case DisplayCorner.TopRight:    x = Screen.width - w - m;    y = m;                        break;
+                case DisplayCorner.BottomLeft:  x = m;                       y = Screen.height - h - m;    break;
+                default:                        x = Screen.width - w - m;    y = Screen.height - h - m;    break;
             }
             return new Rect(x, y, w, h);
         }
@@ -674,50 +841,21 @@ namespace VaroniaBackOffice
             return new Color(ColGood.r, ColGood.g, ColGood.b, alpha);
         }
 
-        private Texture2D GetTex(float v)
-        {
-            if (v < 0f)               return _texMuted;
-            if (v >= redThreshold)    return _texBad;
-            if (v >= orangeThreshold) return _texWarn;
-            return _texGood;
-        }
-
-        private Texture2D GetTotalTex(float v)
-        {
-            if (v < 0f)                    return _texMuted;
-            if (v >= redTotalThreshold)    return _texBadMuted;
-            if (v >= orangeTotalThreshold) return _texWarnMuted;
-            return _texGoodMuted;
-        }
-
-        private Texture2D _texGoodMuted, _texWarnMuted, _texBadMuted;
+        // ─── Styles ──────────────────────────────────────────────────────────────
 
         private void EnsureStyles()
         {
-            if (_stylesBuilt) return;
-            _stylesBuilt   = true;
-            _currentAccent = ColGood;
+            float scale = (Screen.height / 1080f) * scaleFactor;
+            if (_stylesBuilt && Mathf.Approximately(_lastScale, scale)) return;
+            _stylesBuilt = true;
+            _lastScale = scale;
 
-            _texBg       = MakeTex(ColBg);
-            _texGood     = MakeTex(ColGood);
-            _texWarn     = MakeTex(ColWarn);
-            _texBad      = MakeTex(ColBad);
-            _texMuted    = MakeTex(ColMuted);
-            _texDivider  = MakeTex(ColDivider);
-            _texAccent   = MakeTex(ColGood);
             _texPillGood = MakeTex(new Color(ColGood.r, ColGood.g, ColGood.b, 0.15f));
             _texPillBad  = MakeTex(new Color(ColBad.r,  ColBad.g,  ColBad.b,  0.15f));
-            _texPillMuted= MakeTex(new Color(0.4f, 0.4f, 0.4f, 0.15f));
-            _texTotalMuted = MakeTex(new Color(0.7f, 0.7f, 0.8f, 0.15f));
-            _texAvgLine    = MakeTex(new Color(1f, 1f, 1f, 0.5f));
-
-            _texGoodMuted = MakeTex(new Color(ColGood.r, ColGood.g, ColGood.b, 0.15f));
-            _texWarnMuted = MakeTex(new Color(ColWarn.r, ColWarn.g, ColWarn.b, 0.15f));
-            _texBadMuted  = MakeTex(new Color(ColBad.r, ColBad.g, ColBad.b, 0.15f));
 
             _labelStyle = new GUIStyle
             {
-                fontSize  = 9,
+                fontSize  = Mathf.RoundToInt(9 * scale),
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleLeft,
                 normal    = { textColor = ColMutedFg },
@@ -725,24 +863,16 @@ namespace VaroniaBackOffice
 
             _pillStyle = new GUIStyle
             {
-                fontSize  = 9,
+                fontSize  = Mathf.RoundToInt(9 * scale),
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleCenter,
                 normal    = { textColor = ColGood, background = _texPillGood },
-                padding   = new RectOffset(4, 4, 2, 2),
-            };
-
-            _valueStyle = new GUIStyle
-            {
-                fontSize  = 11,
-                fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.MiddleRight,
-                normal    = { textColor = ColValue },
+                padding   = new RectOffset(Mathf.RoundToInt(4 * scale), Mathf.RoundToInt(4 * scale), Mathf.RoundToInt(2 * scale), Mathf.RoundToInt(2 * scale)),
             };
 
             _statLabelStyle = new GUIStyle
             {
-                fontSize  = 8,
+                fontSize  = Mathf.RoundToInt(8 * scale),
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleLeft,
                 normal    = { textColor = ColMutedFg },
@@ -750,7 +880,7 @@ namespace VaroniaBackOffice
 
             _statValueStyle = new GUIStyle
             {
-                fontSize  = 10,
+                fontSize  = Mathf.RoundToInt(10 * scale),
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleLeft,
                 normal    = { textColor = ColValue },
@@ -766,8 +896,6 @@ namespace VaroniaBackOffice
             return t;
         }
 
-        
 #endif
     }
-
 }

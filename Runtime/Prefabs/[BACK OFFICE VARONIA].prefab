@@ -19,7 +19,7 @@ GameObject:
   - component: {fileID: 3100889425256832166}
   - component: {fileID: 8446599911813911572}
   m_Layer: 0
-  m_Name: ---DEBUG---
+  m_Name: DEBUG
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -55,6 +55,7 @@ MonoBehaviour:
   corner: 0
   margin: 12
   size: {x: 180, y: 120}
+  mini: 0
   sampleCount: 200
   updateInterval: 0.1
   memUpdateInterval: 0.5
@@ -93,7 +94,7 @@ MonoBehaviour:
   size: {x: 340, y: 120}
   wsUrl: ws://localhost:8082/api/events
   timeoutSeconds: 5
-  maxBars: 80
+  maxBars: 60
   maxLatency: 40
   maxTotalLatency: 100
   orangeThreshold: 15
@@ -284,8 +285,6 @@ MonoBehaviour:
     hideMode: 0
     Direct: 0
     Controller: 0
-  gameConfig:
-    Dificulty: 0
   mqttClient: {fileID: 0}
 --- !u!114 &2999505759804885042
 MonoBehaviour:
@@ -387,6 +386,7 @@ MonoBehaviour:
   - {fileID: 11400000, guid: 3ac08eda8e7a58d4d815142d9e5d2f50, type: 2}
   - {fileID: 11400000, guid: 0523bfb2f1a883a4fbc5b93729105bd0, type: 2}
   - {fileID: 11400000, guid: 6227fbbbea6ca374885122050cd10428, type: 2}
+  - {fileID: 11400000, guid: 7ce1f7ec6b0e25448a70070cdfbf6b4a, type: 2}
   currentweapons: []
 --- !u!114 &4963757222226558641
 MonoBehaviour:
