@@ -164,6 +164,7 @@ namespace VaroniaBackOffice
         {
             var go = new GameObject("WorldSpaceDebugCanvas");
             go.hideFlags = HideFlags.DontSave;
+            DontDestroyOnLoad(go);
 
             _canvas = go.AddComponent<Canvas>();
             _canvas.renderMode = RenderMode.WorldSpace;
